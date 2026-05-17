@@ -3,8 +3,12 @@
 import { useAuth } from "@/context/AuthContext";
 import { useProfile } from "@/context/ProfileContext";
 import {
+  type CgpaBaseline,
+  loadCgpaBaseline,
+  saveCgpaBaseline,
+} from "@/lib/cgpa-baseline";
+import {
   cloneTermsSnapshot,
-  createEmptyAcademicTerms,
   loadAcademicCache,
   reEnrichAllTerms,
   sanitizeTermsDataset,
@@ -32,17 +36,17 @@ import {
   persistAllTerms,
   persistAssignment,
   persistCourse,
+  persistFullAcademicState,
   persistTerm,
 } from "@/lib/supabase/academic-write";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { getDefaultScale, type GradeScale } from "@/lib/grading";
 import {
-  createInitialTerms,
   createTermId,
   deleteTermById,
   ensureSingleActiveTerm,
   getActiveTerm,
-  normalizeTerms,
+  renameTermById,
   setActiveTermById,
   type Term,
 } from "@/lib/terms";
@@ -72,10 +76,17 @@ type CourseContextValue = {
   courses: Course[];
   termTargetGpa: number | null;
   isHydratingFromCloud: boolean;
+  cgpaBaseline: CgpaBaseline | null;
   setTermTargetGpa: (value: number | null) => void;
   addTerm: (name: string) => void;
+  renameTerm: (termId: string, name: string) => void;
   setActiveTerm: (termId: string) => void;
   deleteTerm: (termId: string) => void;
+  setCgpaBaseline: (baseline: CgpaBaseline | null) => void;
+  replaceAcademicState: (
+    terms: Term[],
+    baseline?: CgpaBaseline | null,
+  ) => Promise<boolean>;
   addCourse: (
     name: string,
     credits: number,
@@ -147,6 +158,8 @@ function toCourseSeed(course: Course) {
 }
 
 function applyValidatedTerms(rawTerms: Term[], scale: GradeScale): Term[] | null {
+  if (!Array.isArray(rawTerms)) return null;
+  if (rawTerms.length === 0) return [];
   return sanitizeTermsDataset(rawTerms, scale);
 }
 
@@ -164,21 +177,18 @@ function commitValidatedTerms(
 export function CourseProvider({ children }: { children: ReactNode }) {
   const { user, isLoading: authLoading } = useAuth();
   const { gradeScale } = useProfile();
-  const [terms, setTerms] = useState<Term[]>(() =>
-    typeof window !== "undefined"
-      ? loadAcademicCache(getDefaultScale(), null)
-      : normalizeTerms(createInitialTerms()),
-  );
-  const [isStorageReady, setIsStorageReady] = useState(
-    () => typeof window !== "undefined",
-  );
+  const [terms, setTerms] = useState<Term[]>([]);
+  const [cgpaBaseline, setCgpaBaselineState] = useState<CgpaBaseline | null>(null);
+  const [isStorageReady, setIsStorageReady] = useState(false);
   const [isHydratingFromCloud, setIsHydratingFromCloud] = useState(false);
   const gradeScaleRef = useRef(gradeScale);
   const termsRef = useRef(terms);
+  const cgpaBaselineRef = useRef(cgpaBaseline);
   const skipCacheWriteRef = useRef(false);
   const hydrationDisplaySnapshotRef = useRef<Term[] | null>(null);
   gradeScaleRef.current = gradeScale;
   termsRef.current = terms;
+  cgpaBaselineRef.current = cgpaBaseline;
 
   const termsForDisplay = useMemo(() => {
     if (isHydratingFromCloud && hydrationDisplaySnapshotRef.current) {
@@ -198,9 +208,11 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       if (!userId || !isSupabaseConfigured()) {
         const guestTerms = loadAcademicCache(scale, null);
         const validated = applyValidatedTerms(guestTerms, scale) ?? guestTerms;
+        const guestBaseline = loadCgpaBaseline(null);
         if (!cancelled) {
           skipCacheWriteRef.current = true;
           setTerms(validated);
+          setCgpaBaselineState(guestBaseline);
           skipCacheWriteRef.current = false;
           setIsHydratingFromCloud(false);
           hydrationDisplaySnapshotRef.current = null;
@@ -211,11 +223,13 @@ export function CourseProvider({ children }: { children: ReactNode }) {
 
       const cached = loadAcademicCache(scale, userId);
       const cachedValidated = applyValidatedTerms(cached, scale) ?? cached;
+      const cachedBaseline = loadCgpaBaseline(userId);
 
       if (!cancelled) {
         hydrationDisplaySnapshotRef.current = cloneTermsSnapshot(cachedValidated);
         skipCacheWriteRef.current = true;
         setTerms(cachedValidated);
+        setCgpaBaselineState(cachedBaseline);
         skipCacheWriteRef.current = false;
         setIsStorageReady(true);
         setIsHydratingFromCloud(true);
@@ -229,11 +243,11 @@ export function CourseProvider({ children }: { children: ReactNode }) {
 
       if (result.ok) {
         if (result.terms.length === 0) {
-          const empty = createEmptyAcademicTerms(scale);
           skipCacheWriteRef.current = true;
-          setTerms(empty);
+          setTerms([]);
+          setCgpaBaselineState(cachedBaseline);
           skipCacheWriteRef.current = false;
-          saveAcademicCache(empty, userId);
+          saveAcademicCache([], userId);
           return;
         }
 
@@ -271,9 +285,10 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       return;
     }
     const validated = applyValidatedTerms(terms, gradeScaleRef.current);
-    if (!validated) return;
+    if (validated === null) return;
     saveAcademicCache(validated, user?.id ?? null);
-  }, [terms, isStorageReady, isHydratingFromCloud, user?.id]);
+    saveCgpaBaseline(cgpaBaseline, user?.id ?? null);
+  }, [terms, cgpaBaseline, isStorageReady, isHydratingFromCloud, user?.id]);
 
   const activeTerm = useMemo(() => getActiveTerm(termsForDisplay), [termsForDisplay]);
   const courses = useMemo(() => activeTerm?.courses ?? [], [activeTerm]);
@@ -306,15 +321,16 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       const trimmed = name.trim();
       if (!trimmed) return;
 
+      const prev = termsRef.current;
       const newTerm: Term = {
         id: createTermId(trimmed),
         name: trimmed,
-        isActive: false,
+        isActive: prev.length === 0,
         courses: [],
         termTargetGpa: null,
       };
-      const prev = termsRef.current;
-      const next = ensureSingleActiveTerm([...prev, newTerm]);
+      const next =
+        prev.length === 0 ? [newTerm] : ensureSingleActiveTerm([...prev, newTerm]);
       const userId = user?.id;
 
       void (async () => {
@@ -343,20 +359,69 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     [user?.id],
   );
 
+  const renameTerm = useCallback(
+    (termId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const prev = termsRef.current;
+      const next = renameTermById(prev, termId, trimmed);
+      const renamed = next.find((term) => term.id === termId);
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId) && renamed) {
+          if (!(await persistTerm(userId!, renamed))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
+
   const deleteTerm = useCallback(
     (termId: string) => {
       const prev = termsRef.current;
       const next = deleteTermById(prev, termId);
-      const final =
-        next.length === 0 ? normalizeTerms(createInitialTerms()) : next;
       const userId = user?.id;
 
       void (async () => {
         if (canPersistAcademicData(userId)) {
           if (!(await deleteTermRecord(userId!, termId))) return;
         }
-        commitValidatedTerms(final, gradeScaleRef.current, setTerms);
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
       })();
+    },
+    [user?.id],
+  );
+
+  const setCgpaBaseline = useCallback(
+    (baseline: CgpaBaseline | null) => {
+      setCgpaBaselineState(baseline);
+      saveCgpaBaseline(baseline, user?.id ?? null);
+    },
+    [user?.id],
+  );
+
+  const replaceAcademicState = useCallback(
+    async (nextTerms: Term[], baseline: CgpaBaseline | null = null) => {
+      const validated =
+        applyValidatedTerms(nextTerms, gradeScaleRef.current) ?? nextTerms;
+      const userId = user?.id;
+
+      if (canPersistAcademicData(userId)) {
+        if (!(await persistFullAcademicState(userId!, validated))) {
+          return false;
+        }
+      }
+
+      skipCacheWriteRef.current = true;
+      setTerms(validated);
+      setCgpaBaselineState(baseline);
+      skipCacheWriteRef.current = false;
+      saveAcademicCache(validated, userId ?? null);
+      saveCgpaBaseline(baseline, userId ?? null);
+      return true;
     },
     [user?.id],
   );
@@ -631,10 +696,14 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       courses,
       termTargetGpa,
       isHydratingFromCloud,
+      cgpaBaseline,
       setTermTargetGpa,
       addTerm,
+      renameTerm,
       setActiveTerm,
       deleteTerm,
+      setCgpaBaseline,
+      replaceAcademicState,
       addCourse,
       updateCourse,
       deleteCourse,
@@ -652,10 +721,14 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       courses,
       termTargetGpa,
       isHydratingFromCloud,
+      cgpaBaseline,
       setTermTargetGpa,
       addTerm,
+      renameTerm,
       setActiveTerm,
       deleteTerm,
+      setCgpaBaseline,
+      replaceAcademicState,
       addCourse,
       updateCourse,
       deleteCourse,

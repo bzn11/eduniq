@@ -1,3 +1,4 @@
+import type { CgpaBaseline } from "@/lib/cgpa-baseline";
 import {
   formatGpaTargetLabel,
   getDefaultScale,
@@ -415,12 +416,49 @@ export function calculateTermGpa(courses: CourseForAcademicStats[]): number | nu
   return weighted / totalCredits;
 }
 
+function sumEligibleCourseGpaPoints(courses: CourseForAcademicStats[]): {
+  points: number;
+  credits: number;
+} {
+  const eligible = courses.filter(courseContributesToTermGpa);
+  const credits = eligible.reduce((sum, course) => sum + course.credits, 0);
+  if (credits <= 0) return { points: 0, credits: 0 };
+
+  const points = eligible.reduce(
+    (sum, course) => sum + (course.gpaValue as number) * course.credits,
+    0,
+  );
+
+  return { points, credits };
+}
+
 /**
  * CGPA across all terms: sum(courseGpa × credits) / sum(credits) over every
  * eligible course globally. Never averages term GPAs.
+ * Optional baseline adds prior completed credit at a fixed CGPA without fake courses.
  */
-export function calculateCgpa(terms: TermForAcademicStats[]): number | null {
-  return calculateTermGpa(getAllCoursesFromTerms(terms));
+export function calculateCgpa(
+  terms: TermForAcademicStats[],
+  baseline: CgpaBaseline | null = null,
+): number | null {
+  const { points: coursePoints, credits: courseCredits } = sumEligibleCourseGpaPoints(
+    getAllCoursesFromTerms(terms),
+  );
+
+  if (!baseline) {
+    if (courseCredits <= 0) return null;
+    return coursePoints / courseCredits;
+  }
+
+  const baselinePoints = baseline.cgpa * baseline.completedCredits;
+  const totalCredits = baseline.completedCredits + courseCredits;
+  if (totalCredits <= 0) return null;
+
+  if (courseCredits <= 0) {
+    return baseline.cgpa;
+  }
+
+  return (baselinePoints + coursePoints) / totalCredits;
 }
 
 export function calculateWeightedPercentage(
@@ -489,8 +527,9 @@ export function calculateVsLastTerm(terms: TermForAcademicStats[]): number | nul
 
 export function computeAcademicHistorySummary(
   terms: TermForAcademicStats[],
+  baseline: CgpaBaseline | null = null,
 ): AcademicHistorySummary {
-  const cgpa = calculateCgpa(terms);
+  const cgpa = calculateCgpa(terms, baseline);
   const cumulativePercent = calculateCumulativePercentage(terms);
   const vsLastTerm = calculateVsLastTerm(terms);
 

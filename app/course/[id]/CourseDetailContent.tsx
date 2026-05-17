@@ -1,9 +1,10 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCourses } from "@/context/CourseContext";
 import { useProfile } from "@/context/ProfileContext";
+import { getAssignmentPercent } from "@/lib/assignments";
 import {
   formatAssignmentScore,
   formatCoursePercent,
@@ -20,6 +21,15 @@ import {
   parseGpaTargetOptionId,
   type GpaTargetOption,
 } from "@/lib/grading";
+import {
+  applySimulatedAssignmentChange,
+  calculateRequiredFinalScore,
+  calculateSimulatedCourse,
+  cloneCourse,
+  compareWhatIfToReal,
+  formatRequiredFinalScore,
+  formatWhatIfDelta,
+} from "@/lib/whatIfEngine";
 
 function formatPercent(value: number) {
   if (value === 0) return "—";
@@ -211,6 +221,31 @@ export default function CourseDetailContent() {
   const [editAssignmentTotal, setEditAssignmentTotal] = useState("");
   const [editErrors, setEditErrors] = useState<AssignmentFieldErrors>(emptyErrors);
 
+  const [whatIfActive, setWhatIfActive] = useState(false);
+  const [simulatedDraft, setSimulatedDraft] = useState<ReturnType<typeof cloneCourse> | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setWhatIfActive(false);
+    setSimulatedDraft(null);
+  }, [id]);
+
+  const simulatedCourse = useMemo(() => {
+    if (!simulatedDraft) return null;
+    return calculateSimulatedCourse(simulatedDraft, gradeScale);
+  }, [simulatedDraft, gradeScale]);
+
+  const whatIfComparison = useMemo(() => {
+    if (!simulatedCourse || !course) return null;
+    return compareWhatIfToReal(simulatedCourse, course);
+  }, [simulatedCourse, course]);
+
+  const requiredFinalScore = useMemo(() => {
+    if (!simulatedCourse) return null;
+    return calculateRequiredFinalScore(simulatedCourse, gradeScale);
+  }, [simulatedCourse, gradeScale]);
+
   if (!course) {
     return <p className="text-sm text-zinc-600">Course not found</p>;
   }
@@ -345,6 +380,25 @@ export default function CourseDetailContent() {
 
     deleteCourse(courseId);
     router.push("/home");
+  }
+
+  function toggleWhatIf() {
+    if (whatIfActive) {
+      setWhatIfActive(false);
+      setSimulatedDraft(null);
+      return;
+    }
+    setSimulatedDraft(cloneCourse(activeCourse));
+    setWhatIfActive(true);
+  }
+
+  function handleSimulatedGradeChange(assignmentId: string, value: string) {
+    if (!simulatedDraft) return;
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) return;
+    setSimulatedDraft(
+      applySimulatedAssignmentChange(simulatedDraft, assignmentId, { percent: parsed }),
+    );
   }
 
   const targetDisplay = formatCourseTargetLabel(activeCourse);
@@ -651,12 +705,97 @@ export default function CourseDetailContent() {
         <p className="mt-1 text-sm text-zinc-500">What-if mode</p>
         <button
           type="button"
-          disabled
-          className="mt-4 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 opacity-70"
-          aria-disabled="true"
+          onClick={toggleWhatIf}
+          className="mt-4 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-50"
         >
-          Open simulation
+          {whatIfActive ? "Close simulation" : "Open simulation"}
         </button>
+        {whatIfActive && simulatedCourse && whatIfComparison && (
+          <div className="mt-4 space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <p className="text-xs text-zinc-500">Simulated grade</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                  {formatCoursePercent(simulatedCourse.currentGrade)}
+                </p>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  {formatWhatIfDelta(whatIfComparison.gradeDelta)} vs current
+                </p>
+              </div>
+              {simulatedCourse.gpaValue !== null && (
+                <div>
+                  <p className="text-xs text-zinc-500">Simulated GPA</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                    {simulatedCourse.gpaValue.toFixed(1)}
+                  </p>
+                  {whatIfComparison.gpaDelta !== null && (
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      {formatWhatIfDelta(whatIfComparison.gpaDelta, "")} vs current
+                    </p>
+                  )}
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-zinc-500">Required on remaining work</p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                  {formatRequiredFinalScore(requiredFinalScore)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-zinc-500">Status</p>
+                <p
+                  className={`mt-1 text-lg font-semibold ${getStatusColorClass(simulatedCourse.status)}`}
+                >
+                  {simulatedCourse.status ?? "—"}
+                </p>
+              </div>
+            </div>
+            <ul className="divide-y divide-zinc-200 overflow-hidden rounded-xl border border-zinc-200 bg-white">
+              {simulatedCourse.assignments.map((assignment) => {
+                const realAssignment = activeCourse.assignments.find(
+                  (entry) => entry.id === assignment.id,
+                );
+                const realPercent = realAssignment
+                  ? formatAssignmentScore(realAssignment)
+                  : "—";
+                const simPercent = getAssignmentPercent(assignment);
+
+                return (
+                  <li
+                    key={assignment.id}
+                    className="flex flex-col gap-2 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-zinc-900">{assignment.name}</p>
+                      <p className="text-xs text-zinc-500">
+                        {assignment.weight}% weight · Current: {realPercent}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="sr-only" htmlFor={`what-if-${assignment.id}`}>
+                        Simulated grade for {assignment.name}
+                      </label>
+                      <input
+                        id={`what-if-${assignment.id}`}
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="any"
+                        value={simPercent === null ? "" : String(Math.round(simPercent * 10) / 10)}
+                        onChange={(event) =>
+                          handleSimulatedGradeChange(assignment.id, event.target.value)
+                        }
+                        placeholder="—"
+                        className="w-24 rounded-lg border border-zinc-200 bg-white px-2 py-1 text-sm tabular-nums text-zinc-900 outline-none focus:border-zinc-400"
+                      />
+                      <span className="text-sm text-zinc-500">%</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </section>
     </div>
   );

@@ -29,7 +29,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isClientReady, setIsClientReady] = useState(false);
   const isConfigured = isSupabaseConfigured();
+
+  useEffect(() => {
+    setIsClientReady(true);
+  }, []);
 
   const refreshUser = useCallback(async () => {
     if (!isConfigured) {
@@ -83,17 +88,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isEmailVerified = Boolean(user?.email_confirmed_at);
 
+  const authLoading = !isClientReady || isLoading;
+
   const value = useMemo(
     () => ({
       user,
       session,
-      isLoading,
+      isLoading: authLoading,
       isConfigured,
       isEmailVerified,
       signOut,
       refreshUser,
     }),
-    [user, session, isLoading, isConfigured, isEmailVerified, signOut, refreshUser],
+    [user, session, authLoading, isConfigured, isEmailVerified, signOut, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

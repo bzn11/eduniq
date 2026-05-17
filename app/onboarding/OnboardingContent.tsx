@@ -4,12 +4,18 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { useAuth } from "@/context/AuthContext";
 import { useCourses } from "@/context/CourseContext";
 import { useProfile } from "@/context/ProfileContext";
+import { isValidCgpaBaseline } from "@/lib/cgpa-baseline";
 import { isValidCourseCredits } from "@/lib/courses";
 import {
   getGradeScalePresetOptions,
   STANDARD_40_SCALE,
   type GradeScalePresetId,
 } from "@/lib/grading";
+import {
+  buildImportedTerms,
+  type OnboardingImportCourse,
+  type OnboardingImportTerm,
+} from "@/lib/onboarding-import";
 import { isSupabaseConfigured } from "@/lib/supabase/env";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -18,10 +24,39 @@ const inputClassName =
   "mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400";
 
 const scaleOptions = getGradeScalePresetOptions();
-const STEP_LABELS = ["Profile", "Grading scale", "First course"] as const;
 const ONBOARDING_STEP_KEY = "eduniq_onboarding_step";
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | "cgpa" | "full";
+
+type DraftCourse = {
+  id: string;
+  name: string;
+  credits: string;
+  gradePercent: string;
+};
+
+type DraftTerm = {
+  id: string;
+  name: string;
+  courses: DraftCourse[];
+};
+
+function createDraftCourse(): DraftCourse {
+  return {
+    id: `draft-course-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: "",
+    credits: "0.5",
+    gradePercent: "",
+  };
+}
+
+function createDraftTerm(): DraftTerm {
+  return {
+    id: `draft-term-${Date.now().toString(36)}`,
+    name: "",
+    courses: [createDraftCourse()],
+  };
+}
 
 export default function OnboardingContent() {
   const router = useRouter();
@@ -32,8 +67,9 @@ export default function OnboardingContent() {
     needsOnboarding,
     upsertProfile,
     completeOnboarding,
+    gradeScale,
   } = useProfile();
-  const { addCourse } = useCourses();
+  const { replaceAcademicState } = useCourses();
 
   const [step, setStep] = useState<Step>(1);
   const [firstName, setFirstName] = useState("");
@@ -41,8 +77,9 @@ export default function OnboardingContent() {
   const [gradeScaleId, setGradeScaleId] = useState<GradeScalePresetId>(
     STANDARD_40_SCALE.id,
   );
-  const [courseName, setCourseName] = useState("");
-  const [credits, setCredits] = useState("0.5");
+  const [importCgpa, setImportCgpa] = useState("");
+  const [importCredits, setImportCredits] = useState("");
+  const [draftTerms, setDraftTerms] = useState<DraftTerm[]>([createDraftTerm()]);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const hasRestoredStep = useRef(false);
@@ -84,8 +121,8 @@ export default function OnboardingContent() {
       hasRestoredStep.current = true;
       try {
         const stored = sessionStorage.getItem(ONBOARDING_STEP_KEY);
-        if (stored === "2" || stored === "3") {
-          setStep(Number(stored) as Step);
+        if (stored === "2" || stored === "3" || stored === "cgpa" || stored === "full") {
+          setStep(stored === "2" ? 2 : stored === "3" ? 3 : (stored as Step));
           return;
         }
       } catch {
@@ -105,6 +142,47 @@ export default function OnboardingContent() {
       // Ignore private-mode storage errors.
     }
   }, [step]);
+
+  async function finishOnboardingFlow(
+    terms: OnboardingImportTerm[],
+    baseline: { cgpa: number; completedCredits: number } | null,
+  ) {
+    setError(null);
+    setIsSaving(true);
+
+    const result = await completeOnboarding({
+      firstName,
+      schoolName: schoolName.trim() || null,
+      gradeScaleId,
+    });
+
+    if (!result.ok) {
+      setIsSaving(false);
+      setError(result.error ?? "Could not complete onboarding.");
+      return;
+    }
+
+    const imported =
+      terms.length > 0
+        ? buildImportedTerms(terms, gradeScale)
+        : [];
+    const replaceOk = await replaceAcademicState(imported, baseline);
+    if (!replaceOk) {
+      setIsSaving(false);
+      setError("Could not save your academic data. Try again.");
+      return;
+    }
+
+    try {
+      sessionStorage.removeItem(ONBOARDING_STEP_KEY);
+    } catch {
+      // Ignore private-mode storage errors.
+    }
+
+    setIsSaving(false);
+    router.replace("/home");
+    router.refresh();
+  }
 
   async function handleContinueStep1(event: React.FormEvent) {
     event.preventDefault();
@@ -145,47 +223,89 @@ export default function OnboardingContent() {
     setStep(3);
   }
 
-  async function finishOnboarding(addFirstCourse: boolean) {
-    setError(null);
+  async function handleStartFresh() {
+    await finishOnboardingFlow([], null);
+  }
 
-    if (addFirstCourse) {
-      const trimmedCourse = courseName.trim();
-      const courseCredits = Number(credits);
-      if (!trimmedCourse) {
-        setError("Course name is required, or skip this step.");
-        return;
-      }
-      if (!isValidCourseCredits(courseCredits)) {
-        setError("Enter valid credits greater than 0.");
-        return;
-      }
-    }
+  async function handleFinishCgpaImport(event: React.FormEvent) {
+    event.preventDefault();
+    const cgpa = Number(importCgpa);
+    const completedCredits = Number(importCredits);
+    const baseline = { cgpa, completedCredits };
 
-    setIsSaving(true);
-    const result = await completeOnboarding({
-      firstName,
-      schoolName: schoolName.trim() || null,
-      gradeScaleId,
-    });
-    setIsSaving(false);
-
-    if (!result.ok) {
-      setError(result.error ?? "Could not complete onboarding.");
+    if (!isValidCgpaBaseline(baseline)) {
+      setError("Enter a valid CGPA (0–4.33) and completed credits greater than 0.");
       return;
     }
 
-    if (addFirstCourse) {
-      addCourse(courseName.trim(), Number(credits), null);
+    await finishOnboardingFlow([], baseline);
+  }
+
+  async function handleFinishFullImport() {
+    const imports: OnboardingImportTerm[] = [];
+
+    for (const draft of draftTerms) {
+      const termName = draft.name.trim();
+      if (!termName) continue;
+
+      const courses: OnboardingImportCourse[] = [];
+      for (const course of draft.courses) {
+        const name = course.name.trim();
+        if (!name) continue;
+        const credits = Number(course.credits);
+        if (!isValidCourseCredits(credits)) {
+          setError(`"${name}" needs valid credits greater than 0.`);
+          return;
+        }
+        const gradeTrimmed = course.gradePercent.trim();
+        const gradePercent =
+          gradeTrimmed === "" ? null : Number(gradeTrimmed);
+        if (
+          gradePercent !== null &&
+          (Number.isNaN(gradePercent) || gradePercent < 0 || gradePercent > 100)
+        ) {
+          setError(`"${name}" grade must be between 0 and 100, or left blank.`);
+          return;
+        }
+        courses.push({ name, credits, gradePercent });
+      }
+
+      if (courses.length > 0) {
+        imports.push({ name: termName, courses });
+      }
     }
 
-    try {
-      sessionStorage.removeItem(ONBOARDING_STEP_KEY);
-    } catch {
-      // Ignore private-mode storage errors.
+    if (imports.length === 0) {
+      setError("Add at least one term with one course, or choose Start fresh.");
+      return;
     }
 
-    router.replace("/home");
-    router.refresh();
+    await finishOnboardingFlow(imports, null);
+  }
+
+  function updateDraftTerm(termId: string, patch: Partial<DraftTerm>) {
+    setDraftTerms((prev) =>
+      prev.map((term) => (term.id === termId ? { ...term, ...patch } : term)),
+    );
+  }
+
+  function updateDraftCourse(
+    termId: string,
+    courseId: string,
+    patch: Partial<DraftCourse>,
+  ) {
+    setDraftTerms((prev) =>
+      prev.map((term) =>
+        term.id === termId
+          ? {
+              ...term,
+              courses: term.courses.map((course) =>
+                course.id === courseId ? { ...course, ...patch } : course,
+              ),
+            }
+          : term,
+      ),
+    );
   }
 
   async function handleSignOut() {
@@ -205,7 +325,7 @@ export default function OnboardingContent() {
   return (
     <AuthCard
       title="Welcome to Eduniq"
-      subtitle="A quick setup so your GPA tracking matches how you work."
+      subtitle="Set up your transcript the way that matches your academic history."
     >
       <StepIndicator currentStep={step} />
 
@@ -274,16 +394,142 @@ export default function OnboardingContent() {
       )}
 
       {step === 3 && (
-        <CourseStep
-          courseName={courseName}
-          credits={credits}
-          onCourseNameChange={setCourseName}
-          onCreditsChange={setCredits}
-          onBack={() => setStep(2)}
-          onFinish={() => finishOnboarding(true)}
-          onSkip={() => finishOnboarding(false)}
-          isSaving={isSaving}
-        />
+        <div className="space-y-3">
+          <p className="text-sm text-zinc-600">
+            How would you like to set up your academic record?
+          </p>
+          <ImportOption
+            title="Import CGPA only"
+            description="Enter your current cumulative GPA and completed credits. No courses or terms are created."
+            onClick={() => setStep("cgpa")}
+          />
+          <ImportOption
+            title="Import full academic history"
+            description="Add past terms with courses and optional grades."
+            onClick={() => setStep("full")}
+          />
+          <ImportOption
+            title="Start fresh"
+            description="Begin with an empty dashboard. Add terms when you are ready."
+            onClick={handleStartFresh}
+            disabled={isSaving}
+          />
+          <SecondaryButton type="button" onClick={() => setStep(2)} disabled={isSaving}>
+            Back
+          </SecondaryButton>
+        </div>
+      )}
+
+      {step === "cgpa" && (
+        <form onSubmit={handleFinishCgpaImport} className="space-y-5">
+          <p className="text-sm text-zinc-600">
+            This baseline counts toward cumulative GPA without creating placeholder
+            courses.
+          </p>
+          <TextField
+            id="importCgpa"
+            label="Current CGPA"
+            value={importCgpa}
+            onChange={setImportCgpa}
+            placeholder="3.7"
+            required
+          />
+          <TextField
+            id="importCredits"
+            label="Total credits completed"
+            value={importCredits}
+            onChange={setImportCredits}
+            placeholder="20"
+            required
+          />
+          <PrimaryButton type="submit" disabled={isSaving}>
+            {isSaving ? "Finishing…" : "Finish setup"}
+          </PrimaryButton>
+          <SecondaryButton type="button" onClick={() => setStep(3)} disabled={isSaving}>
+            Back
+          </SecondaryButton>
+        </form>
+      )}
+
+      {step === "full" && (
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-600">
+            Add each term and its courses. Grades are optional percentages (0–100).
+          </p>
+          {draftTerms.map((term, termIndex) => (
+            <div
+              key={term.id}
+              className="rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 space-y-3"
+            >
+              <TextField
+                id={`term-${term.id}`}
+                label={`Term ${termIndex + 1} name`}
+                value={term.name}
+                onChange={(value) => updateDraftTerm(term.id, { name: value })}
+                placeholder="Fall 2024"
+                required
+              />
+              {term.courses.map((course, courseIndex) => (
+                <div
+                  key={course.id}
+                  className="grid gap-2 rounded-lg border border-zinc-200 bg-white p-3 sm:grid-cols-3"
+                >
+                  <TextField
+                    id={`course-name-${course.id}`}
+                    label={`Course ${courseIndex + 1}`}
+                    value={course.name}
+                    onChange={(value) =>
+                      updateDraftCourse(term.id, course.id, { name: value })
+                    }
+                    placeholder="Calculus I"
+                  />
+                  <TextField
+                    id={`course-credits-${course.id}`}
+                    label="Credits"
+                    value={course.credits}
+                    onChange={(value) =>
+                      updateDraftCourse(term.id, course.id, { credits: value })
+                    }
+                    placeholder="0.5"
+                  />
+                  <TextField
+                    id={`course-grade-${course.id}`}
+                    label="Grade % (optional)"
+                    value={course.gradePercent}
+                    onChange={(value) =>
+                      updateDraftCourse(term.id, course.id, { gradePercent: value })
+                    }
+                    placeholder="85"
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  updateDraftTerm(term.id, {
+                    courses: [...term.courses, createDraftCourse()],
+                  })
+                }
+                className="text-xs font-medium text-zinc-600 hover:text-zinc-900"
+              >
+                + Add course to this term
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setDraftTerms((prev) => [...prev, createDraftTerm()])}
+            className="text-sm font-medium text-zinc-700 hover:text-zinc-900"
+          >
+            + Add another term
+          </button>
+          <PrimaryButton type="button" onClick={handleFinishFullImport} disabled={isSaving}>
+            {isSaving ? "Finishing…" : "Finish import"}
+          </PrimaryButton>
+          <SecondaryButton type="button" onClick={() => setStep(3)} disabled={isSaving}>
+            Back
+          </SecondaryButton>
+        </div>
       )}
 
       <button
@@ -298,12 +544,25 @@ export default function OnboardingContent() {
 }
 
 function StepIndicator({ currentStep }: { currentStep: Step }) {
+  const labels =
+    currentStep === "cgpa" || currentStep === "full"
+      ? ["Profile", "Scale", "Import", "Details"]
+      : ["Profile", "Scale", "Import"];
+
   return (
     <div className="mb-8 flex items-center justify-center gap-2">
-      {STEP_LABELS.map((label, index) => {
-        const stepNumber = (index + 1) as Step;
-        const isActive = currentStep === stepNumber;
-        const isComplete = currentStep > stepNumber;
+      {labels.map((label, index) => {
+        const order =
+          currentStep === 1
+            ? 1
+            : currentStep === 2
+              ? 2
+              : currentStep === 3
+                ? 3
+                : 4;
+        const stepNumber = index + 1;
+        const isActive = order === stepNumber;
+        const isComplete = order > stepNumber;
         return (
           <div key={label} className="flex flex-col items-center gap-1">
             <div
@@ -322,6 +581,30 @@ function StepIndicator({ currentStep }: { currentStep: Step }) {
         );
       })}
     </div>
+  );
+}
+
+function ImportOption({
+  title,
+  description,
+  onClick,
+  disabled,
+}: {
+  title: string;
+  description: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full rounded-lg border border-zinc-200 px-4 py-3 text-left transition-colors hover:border-zinc-300 hover:bg-zinc-50/80 disabled:opacity-60"
+    >
+      <p className="text-sm font-medium text-zinc-900">{title}</p>
+      <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
+    </button>
   );
 }
 
@@ -401,63 +684,5 @@ function SecondaryButton({
     >
       {children}
     </button>
-  );
-}
-
-function CourseStep({
-  courseName,
-  credits,
-  onCourseNameChange,
-  onCreditsChange,
-  onBack,
-  onFinish,
-  onSkip,
-  isSaving,
-}: {
-  courseName: string;
-  credits: string;
-  onCourseNameChange: (value: string) => void;
-  onCreditsChange: (value: string) => void;
-  onBack: () => void;
-  onFinish: () => void;
-  onSkip: () => void;
-  isSaving: boolean;
-}) {
-  return (
-    <div className="space-y-5">
-      <p className="text-sm text-zinc-600">
-        Optionally add your first course now, or skip and add courses from home.
-      </p>
-      <TextField
-        id="courseName"
-        label="Course name"
-        value={courseName}
-        onChange={onCourseNameChange}
-        placeholder="Introduction to Biology"
-      />
-      <TextField
-        id="credits"
-        label="Credits"
-        value={credits}
-        onChange={onCreditsChange}
-        placeholder="0.5"
-      />
-      <div className="flex flex-col gap-2">
-        <PrimaryButton type="button" onClick={onFinish} disabled={isSaving}>
-          {isSaving ? "Finishing…" : "Finish"}
-        </PrimaryButton>
-        <SecondaryButton type="button" onClick={onSkip} disabled={isSaving}>
-          {isSaving ? "Saving…" : "Skip"}
-        </SecondaryButton>
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={isSaving}
-          className="w-full px-4 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-900 disabled:opacity-60"
-        >
-          Back
-        </button>
-      </div>
-    </div>
   );
 }

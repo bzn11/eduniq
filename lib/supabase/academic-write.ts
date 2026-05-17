@@ -49,6 +49,22 @@ export async function persistAllTerms(userId: string, terms: Term[]): Promise<bo
   return results.every(Boolean);
 }
 
+export async function persistFullAcademicState(
+  userId: string,
+  terms: Term[],
+): Promise<boolean> {
+  if (!canPersistAcademicData(userId)) return false;
+
+  for (const term of terms) {
+    if (!(await persistTerm(userId, term))) return false;
+    for (const course of term.courses) {
+      if (!(await persistCourse(userId, term, course))) return false;
+    }
+  }
+
+  return true;
+}
+
 export async function deleteTerm(userId: string, termId: string): Promise<boolean> {
   if (!canPersistAcademicData(userId)) return false;
 

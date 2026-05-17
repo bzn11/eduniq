@@ -117,7 +117,7 @@ function parseTermsPayload(raw: string | null, scale: GradeScale): Term[] | null
     const terms = parsed
       .map((entry) => parseStoredTerm(entry, scale))
       .filter((term): term is Term => term !== null);
-    if (terms.length === 0) return null;
+    if (terms.length === 0) return [];
     return normalizeTerms(terms);
   } catch {
     return null;
@@ -255,26 +255,16 @@ export function sanitizeTermsDataset(
       });
     }
 
-    if (sanitized.length === 0) return null;
+    if (sanitized.length === 0) return [];
     return normalizeTerms(sanitized);
   } catch {
     return null;
   }
 }
 
-/** One active term with no courses — canonical empty cloud state for signed-in users. */
-export function createEmptyAcademicTerms(
-  scale: GradeScale = getDefaultScale(),
-): Term[] {
-  return normalizeTerms([
-    {
-      id: createTermId(DEFAULT_TERM_NAME),
-      name: DEFAULT_TERM_NAME,
-      isActive: true,
-      courses: [],
-      termTargetGpa: null,
-    },
-  ]);
+/** Canonical empty academic dataset — no implicit terms. */
+export function createEmptyAcademicTerms(): Term[] {
+  return [];
 }
 
 /** Read offline cache only — never treated as source of truth when Supabase is available. */
@@ -291,7 +281,7 @@ export function loadAcademicFallback(
   userId?: string | null,
 ): Term[] {
   if (typeof window === "undefined") {
-    return normalizeTerms(createInitialTerms());
+    return [];
   }
 
   try {
@@ -316,9 +306,9 @@ export function loadAcademicFallback(
       }
     }
 
-    return normalizeTerms(createInitialTerms());
+    return [];
   } catch {
-    return normalizeTerms(createInitialTerms());
+    return [];
   }
 }
 
@@ -326,7 +316,7 @@ export function saveAcademicCache(terms: Term[], userId?: string | null): void {
   if (typeof window === "undefined") return;
 
   const sanitized = sanitizeTermsDataset(terms);
-  if (!sanitized) return;
+  if (sanitized === null) return;
 
   try {
     const payload = JSON.stringify(sanitized);

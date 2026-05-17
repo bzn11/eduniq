@@ -78,6 +78,14 @@ export function deleteTermById(terms: Term[], termId: string): Term[] {
   return next;
 }
 
+export function renameTermById(terms: Term[], termId: string, name: string): Term[] {
+  const trimmed = name.trim();
+  if (!trimmed) return terms;
+  return terms.map((term) =>
+    term.id === termId ? { ...term, name: trimmed } : term,
+  );
+}
+
 export function getTermGpaDisplay(term: Term): string {
   return formatGpaDisplay(calculateTermGpa(term.courses));
 }
@@ -85,7 +93,7 @@ export function getTermGpaDisplay(term: Term): string {
 export function normalizeTerms(terms: Term[]): Term[] {
   const enriched = terms.map((term) => ({
     ...term,
-    name: term.name.trim() || DEFAULT_TERM_NAME,
+    name: term.name.trim() || "Untitled term",
     termTargetGpa:
       term.termTargetGpa !== null && isValidTermTargetGpa(term.termTargetGpa)
         ? term.termTargetGpa
