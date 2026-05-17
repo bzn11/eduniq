@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
+import { AppShell } from "@/components/AppShell";
 import { Providers } from "@/components/Providers";
-import { TopNav } from "@/components/TopNav";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -23,10 +23,7 @@ export default function RootLayout({
     <html lang="en" className={`${geistSans.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col bg-white font-sans text-zinc-900">
         <Providers>
-          <TopNav />
-          <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
-            {children}
-          </main>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

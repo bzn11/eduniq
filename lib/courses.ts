@@ -12,24 +12,35 @@ import {
   type CourseStatus,
   type TargetType,
 } from "@/lib/courseMetrics";
+import { getDefaultScale, type GradeScale } from "@/lib/grading";
 
 export type { Assignment } from "@/lib/assignments";
 export type { CourseStatus, TargetType } from "@/lib/courseMetrics";
 export {
+  calculateCgpa,
+  calculateCumulativePercentage,
   calculateTermGpa,
+  calculateTermPercentage,
+  calculateVsLastTerm,
+  computeAcademicHistorySummary,
   computeTermMetrics,
   courseContributesToTermGpa,
   formatCourseTargetLabel,
+  formatGpaDelta,
+  formatGpaDisplay,
+  formatPercentageDisplay,
   getStatusColorClass,
+  getTermCardSummary,
   hasCourseTarget,
 } from "@/lib/courseMetrics";
+export type { AcademicHistorySummary, TermCardSummary } from "@/lib/courseMetrics";
 
 export { calculateCourseAverage, getAssignmentPercent, isAssignmentGraded };
 
 export type Course = {
   id: string;
   name: string;
-  creditWeight: number;
+  credits: number;
   currentGrade: number;
   targetType: TargetType;
   targetLetter: string | null;
@@ -195,17 +206,33 @@ type CourseSeed = Omit<
 > &
   Partial<Pick<Course, "code" | "trend">>;
 
-export function enrichCourse(course: CourseSeed): Course {
+export function resolveCourseCredits(
+  credits: number | null | undefined,
+): number {
+  if (typeof credits === "number" && isValidCourseCredits(credits)) {
+    return credits;
+  }
+  return 0.5;
+}
+
+export function enrichCourse(
+  course: CourseSeed,
+  scale: GradeScale = getDefaultScale(),
+): Course {
+  const normalized = {
+    ...course,
+    credits: resolveCourseCredits(course.credits),
+  };
   const {
     hasTarget: _hasTarget,
     statusColorClass: _statusColorClass,
     ...metrics
-  } = computeCourseMetrics(course);
+  } = computeCourseMetrics(normalized, scale);
 
   return {
-    ...course,
-    code: course.code ?? deriveCourseCode(course.name),
-    trend: course.trend ?? "→",
+    ...normalized,
+    code: normalized.code ?? deriveCourseCode(normalized.name),
+    trend: normalized.trend ?? "→",
     ...metrics,
   };
 }
@@ -229,7 +256,7 @@ const seedCourses: CourseSeed[] = [
     id: "data-structures",
     name: "Data Structures",
     code: "Cs",
-    creditWeight: 0.5,
+    credits: 0.5,
     ...target(3.7, "A-"),
     trend: "↑",
     assignments: [
@@ -242,7 +269,7 @@ const seedCourses: CourseSeed[] = [
     id: "calculus-ii",
     name: "Calculus II",
     code: "Ma",
-    creditWeight: 0.5,
+    credits: 0.5,
     ...target(4.0, "A"),
     trend: "→",
     assignments: [
@@ -255,7 +282,7 @@ const seedCourses: CourseSeed[] = [
     id: "technical-writing",
     name: "Technical Writing",
     code: "En",
-    creditWeight: 0.5,
+    credits: 0.5,
     ...target(4.0, "A"),
     trend: "↑",
     assignments: [
@@ -268,7 +295,7 @@ const seedCourses: CourseSeed[] = [
     id: "physics-i",
     name: "Physics I",
     code: "Ph",
-    creditWeight: 1.0,
+    credits: 1.0,
     ...target(3.3, "B+"),
     trend: "→",
     assignments: [
@@ -281,7 +308,7 @@ const seedCourses: CourseSeed[] = [
     id: "intro-to-psychology",
     name: "Intro to Psychology",
     code: "Ps",
-    creditWeight: 0.5,
+    credits: 0.5,
     ...target(4.0, "A"),
     trend: "↓",
     assignments: [
@@ -309,6 +336,9 @@ export function isValidTermTargetGpa(value: number): boolean {
   return !Number.isNaN(value) && value >= 0 && value <= 4.33;
 }
 
-export function isValidCreditWeight(value: number): boolean {
+export function isValidCourseCredits(value: number): boolean {
   return !Number.isNaN(value) && value > 0;
 }
+
+/** @deprecated Use isValidCourseCredits */
+export const isValidCreditWeight = isValidCourseCredits;

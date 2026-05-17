@@ -1,9 +1,9 @@
 import {
-  ACTIVE_GRADE_SCALE,
-  formatCourseGradeMeta,
   formatGpaTargetLabel,
+  getDefaultScale,
   getGradeInfo,
   letterToMinPercent,
+  type GradeScale,
 } from "@/lib/grading";
 import {
   calculateCourseAverage,
@@ -41,6 +41,8 @@ export type TermMetrics = {
   hasCourses: boolean;
   termGpa: number | null;
   termGpaDisplay: string;
+  termPercent: number | null;
+  termPercentDisplay: string;
   subtitle: string | null;
   cumulativeDisplay: string;
   targetGpaDisplay: string;
@@ -48,6 +50,37 @@ export type TermMetrics = {
   statusColorClass: string;
   remaining: string | null;
   showTermComparison: boolean;
+};
+
+export type AcademicHistorySummary = {
+  cgpa: number | null;
+  cgpaDisplay: string;
+  cumulativePercent: number | null;
+  cumulativePercentDisplay: string;
+  termCount: number;
+  vsLastTerm: number | null;
+  vsLastTermDisplay: string;
+};
+
+export type TermCardSummary = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  gpaDisplay: string;
+  creditsDisplay: string;
+  previewCourses: string[];
+  moreCount: number;
+};
+
+type CourseForAcademicStats = {
+  credits: number;
+  gpaValue: number | null;
+  assignments: Assignment[];
+  currentGrade: number;
+};
+
+type TermForAcademicStats = {
+  courses: CourseForAcademicStats[];
 };
 
 export function hasCourseTarget(course: {
@@ -65,34 +98,35 @@ export function getStatusColorClass(status: CourseStatus | null): string {
   return "text-rose-700";
 }
 
-function resolveGradeFromPercent(percent: number) {
+function resolveGradeFromPercent(percent: number, scale: GradeScale) {
   if (percent === 0) {
     return { letterGrade: null, gpaValue: null };
   }
-  const info = getGradeInfo(percent, ACTIVE_GRADE_SCALE);
+  const info = getGradeInfo(percent, scale);
   return {
     letterGrade: info.letterGrade,
     gpaValue: info.gpaValue,
   };
 }
 
-export function resolveTargetPercent(course: {
-  targetType: TargetType;
-  targetLetter: string | null;
-  targetGpa: number | null;
-  targetPercentage: number | null;
-}): number | null {
+export function resolveTargetPercent(
+  course: {
+    targetType: TargetType;
+    targetLetter: string | null;
+    targetGpa: number | null;
+    targetPercentage: number | null;
+  },
+  scale: GradeScale = getDefaultScale(),
+): number | null {
   if (!hasCourseTarget(course)) return null;
   if (course.targetLetter) {
-    return letterToMinPercent(course.targetLetter);
+    return letterToMinPercent(course.targetLetter, scale);
   }
   if (course.targetType === "percentage" && course.targetPercentage !== null) {
     return course.targetPercentage;
   }
   if (course.targetGpa !== null) {
-    const band = ACTIVE_GRADE_SCALE.bands.find(
-      (entry) => entry.gpa === course.targetGpa,
-    );
+    const band = scale.bands.find((entry) => entry.gpa === course.targetGpa);
     return band?.min ?? null;
   }
   return null;
@@ -177,13 +211,14 @@ function computeInsight(
   currentGrade: number,
   gpaValue: number | null,
   weights: ReturnType<typeof getAssignmentWeights>,
+  scale: GradeScale,
 ): CourseInsight {
   const targetSet = hasCourseTarget({
     targetGpa,
     targetLetter,
     targetPercentage: null,
   });
-  const trackingLetter = resolveGradeFromPercent(currentGrade).letterGrade;
+  const trackingLetter = resolveGradeFromPercent(currentGrade, scale).letterGrade;
 
   if (!weights.hasAssignments) {
     return {
@@ -254,16 +289,37 @@ function computeInsight(
   };
 }
 
-export function computeCourseMetrics(course: {
-  assignments: Assignment[];
-  targetType: TargetType;
-  targetLetter: string | null;
-  targetGpa: number | null;
-  targetPercentage: number | null;
-}): CourseMetrics {
+export function formatCourseListSecondary(
+  letterGrade: string | null,
+  gpaValue: number | null,
+  credits: number,
+): string {
+  const creditLabel = `${credits} credits`;
+  if (!letterGrade && gpaValue === null) {
+    return creditLabel;
+  }
+
+  const parts: string[] = [];
+  if (letterGrade) parts.push(letterGrade);
+  if (gpaValue !== null) parts.push(`${gpaValue.toFixed(1)} GPA`);
+  parts.push(creditLabel);
+  return parts.join(" · ");
+}
+
+export function computeCourseMetrics(
+  course: {
+    assignments: Assignment[];
+    credits: number;
+    targetType: TargetType;
+    targetLetter: string | null;
+    targetGpa: number | null;
+    targetPercentage: number | null;
+  },
+  scale: GradeScale = getDefaultScale(),
+): CourseMetrics {
   const currentGrade = calculateCourseAverage(course.assignments);
-  const targetGrade = resolveTargetPercent(course);
-  const { letterGrade, gpaValue } = resolveGradeFromPercent(currentGrade);
+  const targetGrade = resolveTargetPercent(course, scale);
+  const { letterGrade, gpaValue } = resolveGradeFromPercent(currentGrade, scale);
   const weights = getAssignmentWeights(course.assignments);
   const hasTarget = hasCourseTarget(course);
   const status = computeCourseStatus(
@@ -274,7 +330,7 @@ export function computeCourseMetrics(course: {
     targetGrade,
     weights,
   );
-  const projectedInfo = getGradeInfo(currentGrade, ACTIVE_GRADE_SCALE);
+  const projectedInfo = getGradeInfo(currentGrade, scale);
 
   const projection = hasTarget
     ? projectedInfo.letterGrade
@@ -287,7 +343,11 @@ export function computeCourseMetrics(course: {
     targetGrade,
     gradeLabel: letterGrade,
     gpaValue,
-    gradeSecondary: formatCourseGradeMeta(letterGrade, currentGrade),
+    gradeSecondary: formatCourseListSecondary(
+      letterGrade,
+      gpaValue,
+      course.credits,
+    ),
     context: getContextLine(course.assignments),
     projection,
     projectedFinalGrade: currentGrade,
@@ -301,6 +361,7 @@ export function computeCourseMetrics(course: {
       currentGrade,
       gpaValue,
       weights,
+      scale,
     ),
     hasTarget,
   };
@@ -327,26 +388,145 @@ export function courseContributesToTermGpa(course: {
   return hasGraded && course.currentGrade > 0 && course.gpaValue !== null;
 }
 
-export function calculateTermGpa(
-  courses: Array<{ creditWeight: number; gpaValue: number | null; assignments: Assignment[]; currentGrade: number }>,
-): number | null {
+export function courseContributesToPercentage(course: {
+  assignments: Assignment[];
+  currentGrade: number;
+}): boolean {
+  const hasGraded = course.assignments.some(isAssignmentGraded);
+  return hasGraded && course.currentGrade > 0;
+}
+
+function getAllCoursesFromTerms(terms: TermForAcademicStats[]): CourseForAcademicStats[] {
+  return terms.flatMap((term) => term.courses);
+}
+
+export function calculateTermGpa(courses: CourseForAcademicStats[]): number | null {
   const eligible = courses.filter(courseContributesToTermGpa);
   if (eligible.length === 0) return null;
 
-  const totalWeight = eligible.reduce((sum, course) => sum + course.creditWeight, 0);
-  if (totalWeight <= 0) return null;
+  const totalCredits = eligible.reduce((sum, course) => sum + course.credits, 0);
+  if (totalCredits <= 0) return null;
 
   const weighted = eligible.reduce(
-    (sum, course) => sum + (course.gpaValue ?? 0) * course.creditWeight,
+    (sum, course) => sum + (course.gpaValue as number) * course.credits,
     0,
   );
 
-  return weighted / totalWeight;
+  return weighted / totalCredits;
+}
+
+/**
+ * CGPA across all terms: sum(courseGpa × credits) / sum(credits) over every
+ * eligible course globally. Never averages term GPAs.
+ */
+export function calculateCgpa(terms: TermForAcademicStats[]): number | null {
+  return calculateTermGpa(getAllCoursesFromTerms(terms));
+}
+
+export function calculateWeightedPercentage(
+  courses: CourseForAcademicStats[],
+): number | null {
+  const eligible = courses.filter(courseContributesToPercentage);
+  if (eligible.length === 0) return null;
+
+  const totalCredits = eligible.reduce((sum, course) => sum + course.credits, 0);
+  if (totalCredits <= 0) return null;
+
+  const weighted = eligible.reduce(
+    (sum, course) => sum + course.currentGrade * course.credits,
+    0,
+  );
+
+  return weighted / totalCredits;
+}
+
+export function calculateTermPercentage(
+  courses: CourseForAcademicStats[],
+): number | null {
+  return calculateWeightedPercentage(courses);
+}
+
+export function calculateCumulativePercentage(
+  terms: TermForAcademicStats[],
+): number | null {
+  return calculateWeightedPercentage(getAllCoursesFromTerms(terms));
+}
+
+export function formatGpaDisplay(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "—";
+  return value.toFixed(2);
+}
+
+export function formatPercentageDisplay(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "—";
+  return `${value.toFixed(1)}%`;
+}
+
+export function formatGpaDelta(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "—";
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}`;
 }
 
 function formatGpa(value: number | null): string {
-  if (value === null) return "—";
-  return value.toFixed(2);
+  return formatGpaDisplay(value);
+}
+
+export function calculateVsLastTerm(terms: TermForAcademicStats[]): number | null {
+  const termGpas = terms
+    .map((term) => calculateTermGpa(term.courses))
+    .filter((gpa): gpa is number => gpa !== null);
+
+  if (termGpas.length < 2) return null;
+
+  const current = termGpas[termGpas.length - 1];
+  const previous = termGpas[termGpas.length - 2];
+  const delta = current - previous;
+
+  if (Number.isNaN(delta)) return null;
+  return delta;
+}
+
+export function computeAcademicHistorySummary(
+  terms: TermForAcademicStats[],
+): AcademicHistorySummary {
+  const cgpa = calculateCgpa(terms);
+  const cumulativePercent = calculateCumulativePercentage(terms);
+  const vsLastTerm = calculateVsLastTerm(terms);
+
+  return {
+    cgpa,
+    cgpaDisplay: formatGpaDisplay(cgpa),
+    cumulativePercent,
+    cumulativePercentDisplay: formatPercentageDisplay(cumulativePercent),
+    termCount: terms.length,
+    vsLastTerm,
+    vsLastTermDisplay: formatGpaDelta(vsLastTerm),
+  };
+}
+
+export function getTermCardSummary(term: {
+  id: string;
+  name: string;
+  isActive: boolean;
+  courses: Array<CourseForAcademicStats & { name: string }>;
+}): TermCardSummary {
+  const previewCourses = term.courses.slice(0, 3).map((course) => course.name);
+  const moreCount = Math.max(0, term.courses.length - 3);
+  const creditsTotal = term.courses.reduce((sum, course) => sum + course.credits, 0);
+
+  return {
+    id: term.id,
+    name: term.name,
+    isActive: term.isActive,
+    gpaDisplay: formatGpaDisplay(calculateTermGpa(term.courses)),
+    creditsDisplay:
+      term.courses.length === 0
+        ? "No courses"
+        : `${creditsTotal % 1 === 0 ? creditsTotal.toFixed(0) : creditsTotal.toFixed(1)} credits`,
+    previewCourses,
+    moreCount,
+  };
 }
 
 function formatTermTargetDisplay(termTargetGpa: number | null): string {
@@ -356,20 +536,27 @@ function formatTermTargetDisplay(termTargetGpa: number | null): string {
 
 export function computeTermMetrics(
   courses: Array<{
-    creditWeight: number;
+    credits: number;
     gpaValue: number | null;
     assignments: Assignment[];
     currentGrade: number;
   }>,
   termTargetGpa: number | null,
+  cgpa: number | null,
 ): TermMetrics {
+  const cumulativeDisplay = formatGpa(cgpa);
+  const termPercent = calculateTermPercentage(courses);
+  const termPercentDisplay = formatPercentageDisplay(termPercent);
+
   if (courses.length === 0) {
     return {
       hasCourses: false,
       termGpa: null,
       termGpaDisplay: "—",
+      termPercent: null,
+      termPercentDisplay: "—",
       subtitle: null,
-      cumulativeDisplay: "—",
+      cumulativeDisplay,
       targetGpaDisplay: "—",
       status: null,
       statusColorClass: "text-zinc-500",
@@ -387,8 +574,10 @@ export function computeTermMetrics(
       hasCourses: true,
       termGpa: null,
       termGpaDisplay: "—",
+      termPercent,
+      termPercentDisplay,
       subtitle: "Add grades to courses to calculate term GPA",
-      cumulativeDisplay: "—",
+      cumulativeDisplay,
       targetGpaDisplay: targetDisplay,
       status: null,
       statusColorClass: "text-zinc-500",
@@ -402,8 +591,10 @@ export function computeTermMetrics(
       hasCourses: true,
       termGpa,
       termGpaDisplay: formatGpa(termGpa),
+      termPercent,
+      termPercentDisplay,
       subtitle: `Weighted across ${gradedCount} graded courses`,
-      cumulativeDisplay: formatGpa(termGpa),
+      cumulativeDisplay,
       targetGpaDisplay: targetDisplay,
       status: null,
       statusColorClass: "text-zinc-500",
@@ -430,8 +621,10 @@ export function computeTermMetrics(
     hasCourses: true,
     termGpa,
     termGpaDisplay: formatGpa(termGpa),
+    termPercent,
+    termPercentDisplay,
     subtitle: `Weighted across ${gradedCount} graded courses`,
-    cumulativeDisplay: formatGpa(termGpa),
+    cumulativeDisplay,
     targetGpaDisplay: targetDisplay,
     status,
     statusColorClass: getStatusColorClass(status),

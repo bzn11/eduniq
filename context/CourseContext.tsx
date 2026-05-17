@@ -1,31 +1,64 @@
 "use client";
 
+import { useAuth } from "@/context/AuthContext";
+import { useProfile } from "@/context/ProfileContext";
 import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+  cloneTermsSnapshot,
+  createEmptyAcademicTerms,
+  loadAcademicCache,
+  reEnrichAllTerms,
+  sanitizeTermsDataset,
+  saveAcademicCache,
+} from "@/lib/academic-storage";
 import {
   applyGpaTarget,
   clearCourseTarget,
   createAssignmentId,
   createCourseId,
   enrichCourse,
-  initialCourses,
-  isValidCreditWeight,
+  isValidCourseCredits,
   isValidTermTargetGpa,
   type Assignment,
   type AssignmentInput,
   type Course,
   type TargetType,
 } from "@/lib/courses";
+import { fetchFullAcademicState } from "@/lib/supabase/academic-fetch";
+import {
+  canPersistAcademicData,
+  deleteAssignment as deleteAssignmentRecord,
+  deleteCourse as deleteCourseRecord,
+  deleteTerm as deleteTermRecord,
+  persistAllTerms,
+  persistAssignment,
+  persistCourse,
+  persistTerm,
+} from "@/lib/supabase/academic-write";
+import { isSupabaseConfigured } from "@/lib/supabase/env";
+import { getDefaultScale, type GradeScale } from "@/lib/grading";
+import {
+  createInitialTerms,
+  createTermId,
+  deleteTermById,
+  ensureSingleActiveTerm,
+  getActiveTerm,
+  normalizeTerms,
+  setActiveTermById,
+  type Term,
+} from "@/lib/terms";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 type CourseUpdates = {
-  creditWeight?: number;
+  credits?: number;
   targetType?: TargetType;
   targetLetter?: string | null;
   targetGpa?: number | null;
@@ -34,12 +67,18 @@ type CourseUpdates = {
 };
 
 type CourseContextValue = {
+  terms: Term[];
+  activeTerm: Term | undefined;
   courses: Course[];
   termTargetGpa: number | null;
+  isHydratingFromCloud: boolean;
   setTermTargetGpa: (value: number | null) => void;
+  addTerm: (name: string) => void;
+  setActiveTerm: (termId: string) => void;
+  deleteTerm: (termId: string) => void;
   addCourse: (
     name: string,
-    creditWeight: number,
+    credits: number,
     target: { gpa: number; letter: string } | null,
   ) => void;
   updateCourse: (courseId: string, updates: CourseUpdates) => void;
@@ -52,109 +91,34 @@ type CourseContextValue = {
   ) => void;
   deleteAssignment: (courseId: string, assignmentId: string) => void;
   getCourseById: (id: string) => Course | undefined;
+  getTermById: (termId: string) => Term | undefined;
+  getTermForCourse: (courseId: string) => Term | undefined;
+  isCourseInActiveTerm: (courseId: string) => boolean;
 };
 
 const CourseContext = createContext<CourseContextValue | null>(null);
 
-const COURSES_STORAGE_KEY = "eduniq_courses";
-const TERM_TARGET_STORAGE_KEY = "eduniq_term_target_gpa";
-
-function isValidStoredAssignment(value: unknown): value is Assignment {
-  if (!value || typeof value !== "object") return false;
-  const assignment = value as Record<string, unknown>;
-  const weight = assignment.weight;
-  return (
-    typeof assignment.id === "string" &&
-    assignment.id.length > 0 &&
-    typeof assignment.name === "string" &&
-    assignment.name.trim().length > 0 &&
-    typeof weight === "number" &&
-    !Number.isNaN(weight) &&
-    weight > 0 &&
-    weight <= 100
-  );
-}
-
-function isValidStoredCourse(value: unknown): value is Course {
-  if (!value || typeof value !== "object") return false;
-  const course = value as Record<string, unknown>;
-  const creditWeight = course.creditWeight;
-  const assignments = course.assignments;
-  return (
-    typeof course.id === "string" &&
-    course.id.length > 0 &&
-    typeof course.name === "string" &&
-    course.name.trim().length > 0 &&
-    typeof creditWeight === "number" &&
-    isValidCreditWeight(creditWeight) &&
-    Array.isArray(assignments) &&
-    assignments.every(isValidStoredAssignment)
-  );
-}
-
-function loadCoursesFromStorage(): Course[] {
-  try {
-    const raw = localStorage.getItem(COURSES_STORAGE_KEY);
-    if (raw === null) return initialCourses;
-
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return initialCourses;
-    if (parsed.length === 0) return [];
-
-    const courses = parsed
-      .filter(isValidStoredCourse)
-      .map((course) => enrichCourse(toCourseSeed(course)));
-
-    return courses.length > 0 ? courses : initialCourses;
-  } catch {
-    return initialCourses;
-  }
-}
-
-function saveCoursesToStorage(courses: Course[]) {
-  try {
-    localStorage.setItem(COURSES_STORAGE_KEY, JSON.stringify(courses));
-  } catch {
-    // Ignore quota / private-mode errors.
-  }
-}
-
-function loadTermTargetFromStorage(): number | null {
-  try {
-    const raw = localStorage.getItem(TERM_TARGET_STORAGE_KEY);
-    if (raw === null) return null;
-
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null) return null;
-    if (typeof parsed === "number" && isValidTermTargetGpa(parsed)) {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function saveTermTargetToStorage(termTargetGpa: number | null) {
-  try {
-    if (termTargetGpa === null) {
-      localStorage.removeItem(TERM_TARGET_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(TERM_TARGET_STORAGE_KEY, JSON.stringify(termTargetGpa));
-  } catch {
-    // Ignore quota / private-mode errors.
-  }
-}
-
-function mapCourse(
-  courses: Course[],
+function mapCourseInTerms(
+  terms: Term[],
   courseId: string,
   updater: (course: Course) => Course,
-): Course[] {
-  return courses.map((course) =>
-    course.id === courseId ? updater(course) : course,
-  );
+): Term[] {
+  return terms.map((term) => ({
+    ...term,
+    courses: term.courses.map((course) =>
+      course.id === courseId ? updater(course) : course,
+    ),
+  }));
+}
+
+function updateActiveTerm(
+  terms: Term[],
+  updater: (term: Term) => Term,
+): Term[] {
+  const activeId = getActiveTerm(terms)?.id;
+  if (!activeId) return ensureSingleActiveTerm(terms);
+
+  return terms.map((term) => (term.id === activeId ? updater(term) : term));
 }
 
 function buildAssignment(input: AssignmentInput): Assignment {
@@ -171,7 +135,7 @@ function toCourseSeed(course: Course) {
   return {
     id: course.id,
     name: course.name,
-    creditWeight: course.creditWeight,
+    credits: course.credits,
     targetType: course.targetType,
     targetLetter: course.targetLetter,
     targetGpa: course.targetGpa,
@@ -182,85 +146,327 @@ function toCourseSeed(course: Course) {
   };
 }
 
+function applyValidatedTerms(rawTerms: Term[], scale: GradeScale): Term[] | null {
+  return sanitizeTermsDataset(rawTerms, scale);
+}
+
+function commitValidatedTerms(
+  rawTerms: Term[],
+  scale: GradeScale,
+  setTerms: (value: Term[]) => void,
+): Term[] | null {
+  const validated = applyValidatedTerms(rawTerms, scale);
+  if (!validated) return null;
+  setTerms(validated);
+  return validated;
+}
+
 export function CourseProvider({ children }: { children: ReactNode }) {
-  const [courses, setCourses] = useState<Course[]>(initialCourses);
-  const [isStorageReady, setIsStorageReady] = useState(false);
-  const [termTargetGpa, setTermTargetGpaState] = useState<number | null>(null);
+  const { user, isLoading: authLoading } = useAuth();
+  const { gradeScale } = useProfile();
+  const [terms, setTerms] = useState<Term[]>(() =>
+    typeof window !== "undefined"
+      ? loadAcademicCache(getDefaultScale(), null)
+      : normalizeTerms(createInitialTerms()),
+  );
+  const [isStorageReady, setIsStorageReady] = useState(
+    () => typeof window !== "undefined",
+  );
+  const [isHydratingFromCloud, setIsHydratingFromCloud] = useState(false);
+  const gradeScaleRef = useRef(gradeScale);
+  const termsRef = useRef(terms);
+  const skipCacheWriteRef = useRef(false);
+  const hydrationDisplaySnapshotRef = useRef<Term[] | null>(null);
+  gradeScaleRef.current = gradeScale;
+  termsRef.current = terms;
+
+  const termsForDisplay = useMemo(() => {
+    if (isHydratingFromCloud && hydrationDisplaySnapshotRef.current) {
+      return hydrationDisplaySnapshotRef.current;
+    }
+    return terms;
+  }, [terms, isHydratingFromCloud]);
 
   useEffect(() => {
-    setCourses(loadCoursesFromStorage());
-    setTermTargetGpaState(loadTermTargetFromStorage());
-    setIsStorageReady(true);
-  }, []);
+    if (authLoading) return;
+
+    let cancelled = false;
+    const userId = user?.id ?? null;
+    const scale = gradeScaleRef.current;
+
+    async function loadAcademicData() {
+      if (!userId || !isSupabaseConfigured()) {
+        const guestTerms = loadAcademicCache(scale, null);
+        const validated = applyValidatedTerms(guestTerms, scale) ?? guestTerms;
+        if (!cancelled) {
+          skipCacheWriteRef.current = true;
+          setTerms(validated);
+          skipCacheWriteRef.current = false;
+          setIsHydratingFromCloud(false);
+          hydrationDisplaySnapshotRef.current = null;
+          setIsStorageReady(true);
+        }
+        return;
+      }
+
+      const cached = loadAcademicCache(scale, userId);
+      const cachedValidated = applyValidatedTerms(cached, scale) ?? cached;
+
+      if (!cancelled) {
+        hydrationDisplaySnapshotRef.current = cloneTermsSnapshot(cachedValidated);
+        skipCacheWriteRef.current = true;
+        setTerms(cachedValidated);
+        skipCacheWriteRef.current = false;
+        setIsStorageReady(true);
+        setIsHydratingFromCloud(true);
+      }
+
+      const result = await fetchFullAcademicState(userId);
+      if (cancelled) return;
+
+      setIsHydratingFromCloud(false);
+      hydrationDisplaySnapshotRef.current = null;
+
+      if (result.ok) {
+        if (result.terms.length === 0) {
+          const empty = createEmptyAcademicTerms(scale);
+          skipCacheWriteRef.current = true;
+          setTerms(empty);
+          skipCacheWriteRef.current = false;
+          saveAcademicCache(empty, userId);
+          return;
+        }
+
+        const hydrated = applyValidatedTerms(result.terms, scale);
+        if (hydrated) {
+          skipCacheWriteRef.current = true;
+          setTerms(hydrated);
+          skipCacheWriteRef.current = false;
+          saveAcademicCache(hydrated, userId);
+          return;
+        }
+      }
+
+      skipCacheWriteRef.current = true;
+      setTerms(cachedValidated);
+      skipCacheWriteRef.current = false;
+    }
+
+    void loadAcademicData();
+
+    return () => {
+      cancelled = true;
+      setIsHydratingFromCloud(false);
+      hydrationDisplaySnapshotRef.current = null;
+    };
+  }, [authLoading, user?.id]);
 
   useEffect(() => {
-    if (!isStorageReady) return;
-    saveCoursesToStorage(courses);
-  }, [courses, isStorageReady]);
+    if (!isStorageReady || isHydratingFromCloud) return;
+    setTerms((prev) => reEnrichAllTerms(prev, gradeScale));
+  }, [gradeScale, isStorageReady, isHydratingFromCloud]);
 
   useEffect(() => {
-    if (!isStorageReady) return;
-    saveTermTargetToStorage(termTargetGpa);
-  }, [termTargetGpa, isStorageReady]);
+    if (!isStorageReady || skipCacheWriteRef.current || isHydratingFromCloud) {
+      return;
+    }
+    const validated = applyValidatedTerms(terms, gradeScaleRef.current);
+    if (!validated) return;
+    saveAcademicCache(validated, user?.id ?? null);
+  }, [terms, isStorageReady, isHydratingFromCloud, user?.id]);
 
-  const setTermTargetGpa = useCallback((value: number | null) => {
-    if (value !== null && !isValidTermTargetGpa(value)) return;
-    setTermTargetGpaState(value);
-  }, []);
+  const activeTerm = useMemo(() => getActiveTerm(termsForDisplay), [termsForDisplay]);
+  const courses = useMemo(() => activeTerm?.courses ?? [], [activeTerm]);
+  const termTargetGpa = activeTerm?.termTargetGpa ?? null;
+
+  const setTermTargetGpa = useCallback(
+    (value: number | null) => {
+      if (value !== null && !isValidTermTargetGpa(value)) return;
+
+      const prev = termsRef.current;
+      const next = updateActiveTerm(prev, (term) => ({
+        ...term,
+        termTargetGpa: value,
+      }));
+      const active = getActiveTerm(next);
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId) && active) {
+          if (!(await persistTerm(userId!, active))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
+
+  const addTerm = useCallback(
+    (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const newTerm: Term = {
+        id: createTermId(trimmed),
+        name: trimmed,
+        isActive: false,
+        courses: [],
+        termTargetGpa: null,
+      };
+      const prev = termsRef.current;
+      const next = ensureSingleActiveTerm([...prev, newTerm]);
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistTerm(userId!, newTerm))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
+
+  const setActiveTerm = useCallback(
+    (termId: string) => {
+      const prev = termsRef.current;
+      const next = ensureSingleActiveTerm(setActiveTermById(prev, termId));
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistAllTerms(userId!, next))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
+
+  const deleteTerm = useCallback(
+    (termId: string) => {
+      const prev = termsRef.current;
+      const next = deleteTermById(prev, termId);
+      const final =
+        next.length === 0 ? normalizeTerms(createInitialTerms()) : next;
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await deleteTermRecord(userId!, termId))) return;
+        }
+        commitValidatedTerms(final, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
 
   const getCourseById = useCallback(
-    (id: string) => courses.find((course) => course.id === id),
-    [courses],
+    (id: string) => {
+      for (const term of terms) {
+        const course = term.courses.find((entry) => entry.id === id);
+        if (course) return course;
+      }
+      return undefined;
+    },
+    [terms],
+  );
+
+  const getTermById = useCallback(
+    (termId: string) => terms.find((term) => term.id === termId),
+    [terms],
+  );
+
+  const getTermForCourse = useCallback(
+    (courseId: string) => {
+      for (const term of terms) {
+        if (term.courses.some((course) => course.id === courseId)) {
+          return term;
+        }
+      }
+      return undefined;
+    },
+    [terms],
+  );
+
+  const isCourseInActiveTerm = useCallback(
+    (courseId: string) => {
+      const term = getTermForCourse(courseId);
+      return term?.isActive ?? false;
+    },
+    [getTermForCourse],
   );
 
   const addCourse = useCallback(
     (
       name: string,
-      creditWeight: number,
+      credits: number,
       target: { gpa: number; letter: string } | null,
     ) => {
       const trimmed = name.trim();
-      if (!trimmed || !isValidCreditWeight(creditWeight)) return;
+      if (!trimmed || !isValidCourseCredits(credits)) return;
 
       const targetFields = target
         ? applyGpaTarget(target.gpa, target.letter)
         : clearCourseTarget();
 
-      const newCourse = enrichCourse({
-        id: createCourseId(trimmed),
-        name: trimmed,
-        creditWeight,
-        assignments: [],
-        ...targetFields,
-      });
+      const newCourse = enrichCourse(
+        {
+          id: createCourseId(trimmed),
+          name: trimmed,
+          credits,
+          assignments: [],
+          ...targetFields,
+        },
+        gradeScale,
+      );
 
-      setCourses((prev) => [...prev, newCourse]);
+      const prev = termsRef.current;
+      const active = getActiveTerm(prev);
+      if (!active) return;
+
+      const next = updateActiveTerm(prev, (term) => ({
+        ...term,
+        courses: [...term.courses, newCourse],
+      }));
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistCourse(userId!, active, newCourse))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
     },
-    [],
+    [gradeScale, user?.id],
   );
 
-  const updateCourse = useCallback((courseId: string, updates: CourseUpdates) => {
-    setCourses((prev) =>
-      mapCourse(prev, courseId, (course) => {
-        const next = {
+  const updateCourse = useCallback(
+    (courseId: string, updates: CourseUpdates) => {
+      const prev = termsRef.current;
+      let syncedCourse: Course | null = null;
+      let syncedTerm: Term | null = null;
+
+      const next = mapCourseInTerms(prev, courseId, (course) => {
+        const nextSeed = {
           ...toCourseSeed(course),
-          ...(updates.creditWeight !== undefined
-            ? { creditWeight: updates.creditWeight }
-            : {}),
+          ...(updates.credits !== undefined ? { credits: updates.credits } : {}),
         };
 
-        if (updates.creditWeight !== undefined && !isValidCreditWeight(updates.creditWeight)) {
+        if (updates.credits !== undefined && !isValidCourseCredits(updates.credits)) {
           return course;
         }
 
         if (updates.clearTarget) {
-          Object.assign(next, clearCourseTarget());
+          Object.assign(nextSeed, clearCourseTarget());
         } else {
-          if (updates.targetType !== undefined) next.targetType = updates.targetType;
-          if (updates.targetLetter !== undefined) next.targetLetter = updates.targetLetter;
-          if (updates.targetGpa !== undefined) next.targetGpa = updates.targetGpa;
+          if (updates.targetType !== undefined) nextSeed.targetType = updates.targetType;
+          if (updates.targetLetter !== undefined) {
+            nextSeed.targetLetter = updates.targetLetter;
+          }
+          if (updates.targetGpa !== undefined) nextSeed.targetGpa = updates.targetGpa;
           if (updates.targetPercentage !== undefined) {
-            next.targetPercentage = updates.targetPercentage;
+            nextSeed.targetPercentage = updates.targetPercentage;
           }
           if (
             updates.targetGpa !== undefined &&
@@ -268,80 +474,167 @@ export function CourseProvider({ children }: { children: ReactNode }) {
             updates.targetGpa !== null &&
             updates.targetLetter
           ) {
-            Object.assign(next, applyGpaTarget(updates.targetGpa, updates.targetLetter));
+            Object.assign(
+              nextSeed,
+              applyGpaTarget(updates.targetGpa, updates.targetLetter),
+            );
           }
         }
 
-        return enrichCourse(next);
-      }),
-    );
-  }, []);
+        const updated = enrichCourse(nextSeed, gradeScale);
+        syncedCourse = updated;
+        syncedTerm =
+          prev.find((term) => term.courses.some((entry) => entry.id === courseId)) ??
+          null;
+        return updated;
+      });
 
-  const deleteCourse = useCallback((courseId: string) => {
-    setCourses((prev) => prev.filter((course) => course.id !== courseId));
-  }, []);
+      if (!syncedCourse || !syncedTerm) return;
+
+      const userId = user?.id;
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistCourse(userId!, syncedTerm!, syncedCourse!))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [gradeScale, user?.id],
+  );
+
+  const deleteCourse = useCallback(
+    (courseId: string) => {
+      const prev = termsRef.current;
+      const next = prev.map((term) => ({
+        ...term,
+        courses: term.courses.filter((course) => course.id !== courseId),
+      }));
+      const userId = user?.id;
+
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await deleteCourseRecord(userId!, courseId))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
+    },
+    [user?.id],
+  );
 
   const addAssignment = useCallback(
     (courseId: string, input: AssignmentInput) => {
       const assignment = buildAssignment(input);
+      const prev = termsRef.current;
+      let syncedCourse: Course | null = null;
 
-      setCourses((prev) =>
-        mapCourse(prev, courseId, (course) =>
-          enrichCourse({
+      const next = mapCourseInTerms(prev, courseId, (course) => {
+        const updated = enrichCourse(
+          {
             ...toCourseSeed(course),
             assignments: [...course.assignments, assignment],
-          }),
-        ),
-      );
+          },
+          gradeScale,
+        );
+        syncedCourse = updated;
+        return updated;
+      });
+
+      if (!syncedCourse) return;
+
+      const userId = user?.id;
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistAssignment(userId!, syncedCourse!, assignment))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
     },
-    [],
+    [gradeScale, user?.id],
   );
 
   const updateAssignment = useCallback(
     (courseId: string, assignmentId: string, input: AssignmentInput) => {
-      setCourses((prev) =>
-        mapCourse(prev, courseId, (course) =>
-          enrichCourse({
+      const updatedAssignment: Assignment = {
+        id: assignmentId,
+        name: input.name,
+        weight: input.weight,
+        earnedPoints: input.earnedPoints,
+        totalPoints: input.totalPoints,
+      };
+
+      const prev = termsRef.current;
+      let syncedCourse: Course | null = null;
+
+      const next = mapCourseInTerms(prev, courseId, (course) => {
+        const updated = enrichCourse(
+          {
             ...toCourseSeed(course),
-            assignments: course.assignments.map((assignment) =>
-              assignment.id === assignmentId
-                ? {
-                    ...assignment,
-                    name: input.name,
-                    weight: input.weight,
-                    earnedPoints: input.earnedPoints,
-                    totalPoints: input.totalPoints,
-                  }
-                : assignment,
+            assignments: course.assignments.map((entry) =>
+              entry.id === assignmentId ? updatedAssignment : entry,
             ),
-          }),
-        ),
-      );
+          },
+          gradeScale,
+        );
+        syncedCourse = updated;
+        return updated;
+      });
+
+      if (!syncedCourse) return;
+
+      const userId = user?.id;
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await persistAssignment(userId!, syncedCourse!, updatedAssignment))) {
+            return;
+          }
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
     },
-    [],
+    [gradeScale, user?.id],
   );
 
   const deleteAssignment = useCallback(
     (courseId: string, assignmentId: string) => {
-      setCourses((prev) =>
-        mapCourse(prev, courseId, (course) =>
-          enrichCourse({
+      const prev = termsRef.current;
+      let syncedCourse: Course | null = null;
+
+      const next = mapCourseInTerms(prev, courseId, (course) => {
+        const updated = enrichCourse(
+          {
             ...toCourseSeed(course),
             assignments: course.assignments.filter(
               (assignment) => assignment.id !== assignmentId,
             ),
-          }),
-        ),
-      );
+          },
+          gradeScale,
+        );
+        syncedCourse = updated;
+        return updated;
+      });
+
+      const userId = user?.id;
+      void (async () => {
+        if (canPersistAcademicData(userId)) {
+          if (!(await deleteAssignmentRecord(userId!, assignmentId))) return;
+        }
+        commitValidatedTerms(next, gradeScaleRef.current, setTerms);
+      })();
     },
-    [],
+    [gradeScale, user?.id],
   );
 
   const value = useMemo(
     () => ({
+      terms: termsForDisplay,
+      activeTerm,
       courses,
       termTargetGpa,
+      isHydratingFromCloud,
       setTermTargetGpa,
+      addTerm,
+      setActiveTerm,
+      deleteTerm,
       addCourse,
       updateCourse,
       deleteCourse,
@@ -349,11 +642,20 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       updateAssignment,
       deleteAssignment,
       getCourseById,
+      getTermById,
+      getTermForCourse,
+      isCourseInActiveTerm,
     }),
     [
+      termsForDisplay,
+      activeTerm,
       courses,
       termTargetGpa,
+      isHydratingFromCloud,
       setTermTargetGpa,
+      addTerm,
+      setActiveTerm,
+      deleteTerm,
       addCourse,
       updateCourse,
       deleteCourse,
@@ -361,6 +663,9 @@ export function CourseProvider({ children }: { children: ReactNode }) {
       updateAssignment,
       deleteAssignment,
       getCourseById,
+      getTermById,
+      getTermForCourse,
+      isCourseInActiveTerm,
     ],
   );
 

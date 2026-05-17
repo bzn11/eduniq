@@ -72,10 +72,75 @@ export const PERCENTAGE_ONLY_SCALE: GradeScale = {
   bands: [],
 };
 
+/** @deprecated Use profile grade scale from ProfileContext; kept as fallback default. */
 export const ACTIVE_GRADE_SCALE: GradeScale = STANDARD_40_SCALE;
+
+export const GRADE_SCALE_PRESETS: readonly GradeScale[] = [
+  STANDARD_40_SCALE,
+  OMSAS_SCALE,
+  SCALE_433,
+  PERCENTAGE_ONLY_SCALE,
+] as const;
+
+export type GradeScalePresetId = (typeof GRADE_SCALE_PRESETS)[number]["id"];
+
+const GRADE_SCALE_BY_ID = new Map(
+  GRADE_SCALE_PRESETS.map((scale) => [scale.id, scale]),
+);
 
 export function getDefaultScale(): GradeScale {
   return STANDARD_40_SCALE;
+}
+
+export function getGradeScaleById(id: string | null | undefined): GradeScale {
+  if (!id) return STANDARD_40_SCALE;
+  return GRADE_SCALE_BY_ID.get(id) ?? STANDARD_40_SCALE;
+}
+
+export function isValidGradeScaleId(id: string): id is GradeScalePresetId {
+  return GRADE_SCALE_BY_ID.has(id);
+}
+
+export type GradeScalePresetMeta = {
+  scale: GradeScale;
+  description: string;
+  example: string;
+};
+
+export function getGradeScalePresetMeta(scale: GradeScale): GradeScalePresetMeta {
+  if (scale.id === PERCENTAGE_ONLY_SCALE.id) {
+    return {
+      scale,
+      description: "Track course percentages without letter grades or GPA.",
+      example: "Percentages only",
+    };
+  }
+
+  if (scale.id === SCALE_433.id) {
+    return {
+      scale,
+      description: "4.33 maximum GPA with the same percentage bands as standard 4.0.",
+      example: "A+ = 4.33",
+    };
+  }
+
+  if (scale.id === OMSAS_SCALE.id) {
+    return {
+      scale,
+      description: "Ontario medical school application scale with adjusted A-range GPA.",
+      example: "A (85–89) = 3.9",
+    };
+  }
+
+  return {
+    scale,
+    description: "Standard North American 4.0 scale with UofT-style percentage bands.",
+    example: "A+ = 4.0",
+  };
+}
+
+export function getGradeScalePresetOptions(): GradeScalePresetMeta[] {
+  return GRADE_SCALE_PRESETS.map(getGradeScalePresetMeta);
 }
 
 export function getGradeInfo(percentage: number, scale: GradeScale): GradeInfo {

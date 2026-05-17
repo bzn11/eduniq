@@ -1,14 +1,16 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCourses } from "@/context/CourseContext";
+import { useProfile } from "@/context/ProfileContext";
 import {
   formatAssignmentScore,
   formatCoursePercent,
   formatCourseTargetLabel,
   getStatusColorClass,
   hasCourseTarget,
+  isValidCourseCredits,
   parseAssignmentInput,
   type Assignment,
   type AssignmentFieldErrors,
@@ -16,6 +18,7 @@ import {
 import {
   getGpaTargetOptions,
   parseGpaTargetOptionId,
+  type GpaTargetOption,
 } from "@/lib/grading";
 
 function formatPercent(value: number) {
@@ -23,12 +26,12 @@ function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
 
-const gpaTargetOptions = getGpaTargetOptions();
 const NO_TARGET_OPTION = "none";
 
 function getTargetOptionId(
   targetGpa: number | null,
   targetLetter: string | null,
+  gpaTargetOptions: GpaTargetOption[],
 ): string {
   if (targetGpa === null || !targetLetter) {
     return NO_TARGET_OPTION;
@@ -169,9 +172,15 @@ const emptyErrors: AssignmentFieldErrors = {};
 export default function CourseDetailContent() {
   const params = useParams();
   const router = useRouter();
+  const { gradeScale } = useProfile();
+  const gpaTargetOptions = useMemo(
+    () => getGpaTargetOptions(gradeScale),
+    [gradeScale],
+  );
   const id = typeof params.id === "string" ? params.id : "";
   const {
     getCourseById,
+    isCourseInActiveTerm,
     addAssignment,
     updateAssignment,
     deleteAssignment,
@@ -190,6 +199,9 @@ export default function CourseDetailContent() {
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetOptionId, setTargetOptionId] = useState("");
 
+  const [editingCredits, setEditingCredits] = useState(false);
+  const [creditsInput, setCreditsInput] = useState("");
+
   const [editingAssignmentId, setEditingAssignmentId] = useState<string | null>(
     null,
   );
@@ -205,6 +217,7 @@ export default function CourseDetailContent() {
 
   const activeCourse = course;
   const courseId = activeCourse.id;
+  const readOnly = !isCourseInActiveTerm(courseId);
 
   function resetAddAssignmentForm() {
     setAssignmentName("");
@@ -302,9 +315,26 @@ export default function CourseDetailContent() {
 
   function handleStartEditTarget() {
     setTargetOptionId(
-      getTargetOptionId(activeCourse.targetGpa, activeCourse.targetLetter),
+      getTargetOptionId(
+        activeCourse.targetGpa,
+        activeCourse.targetLetter,
+        gpaTargetOptions,
+      ),
     );
     setEditingTarget(true);
+  }
+
+  function handleSaveCredits(event: React.FormEvent) {
+    event.preventDefault();
+    const value = Number(creditsInput);
+    if (!isValidCourseCredits(value)) return;
+    updateCourse(courseId, { credits: value });
+    setEditingCredits(false);
+  }
+
+  function handleStartEditCredits() {
+    setCreditsInput(String(activeCourse.credits));
+    setEditingCredits(true);
   }
 
   function handleDeleteCourse() {
@@ -322,11 +352,58 @@ export default function CourseDetailContent() {
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
+      {readOnly && (
+        <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+          This course belongs to a past term and is read-only.
+        </p>
+      )}
       <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">
             {activeCourse.name}
           </h1>
+          {!readOnly && editingCredits ? (
+            <form
+              onSubmit={handleSaveCredits}
+              className="mt-2 flex items-center gap-2"
+            >
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={creditsInput}
+                onChange={(event) => setCreditsInput(event.target.value)}
+                required
+                className="w-24 rounded-lg border border-zinc-200 px-2 py-1 text-sm text-zinc-900 outline-none focus:border-zinc-400"
+              />
+              <button
+                type="submit"
+                className="text-xs font-medium text-zinc-900 hover:underline"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditingCredits(false)}
+                className="text-xs font-medium text-zinc-500 hover:underline"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <div className="mt-1 flex items-center gap-2 text-sm text-zinc-500">
+              <span>{activeCourse.credits} credits</span>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={handleStartEditCredits}
+                  className="text-xs font-medium text-zinc-500 hover:text-zinc-900"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex items-baseline gap-3 sm:text-right">
           <p className="text-3xl font-bold tabular-nums tracking-tight text-zinc-900">
@@ -354,7 +431,7 @@ export default function CourseDetailContent() {
           </div>
           <div>
             <p className="text-xs text-zinc-500">Target</p>
-            {editingTarget ? (
+            {!readOnly && editingTarget ? (
               <form onSubmit={handleSaveTarget} className="mt-1 space-y-2">
                 <select
                   value={targetOptionId}
@@ -389,13 +466,15 @@ export default function CourseDetailContent() {
                 <p className="text-lg font-semibold tabular-nums text-zinc-900">
                   {targetDisplay}
                 </p>
-                <button
-                  type="button"
-                  onClick={handleStartEditTarget}
-                  className="text-xs font-medium text-zinc-500 hover:text-zinc-900"
-                >
-                  Edit
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={handleStartEditTarget}
+                    className="text-xs font-medium text-zinc-500 hover:text-zinc-900"
+                  >
+                    Edit
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -454,19 +533,21 @@ export default function CourseDetailContent() {
           <h2 className="text-lg font-semibold tracking-tight text-zinc-900">
             Assignments
           </h2>
-          <button
-            type="button"
-            onClick={() => {
-              resetEditAssignmentForm();
-              setShowAddAssignment((open) => !open);
-            }}
-            className={actionButtonClassName}
-          >
-            + Add Assignment
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => {
+                resetEditAssignmentForm();
+                setShowAddAssignment((open) => !open);
+              }}
+              className={actionButtonClassName}
+            >
+              + Add Assignment
+            </button>
+          )}
         </div>
 
-        {showAddAssignment && (
+        {!readOnly && showAddAssignment && (
           <div className="mb-3">
             <AssignmentForm
               name={assignmentName}
@@ -492,7 +573,7 @@ export default function CourseDetailContent() {
             </li>
           ) : (
             course.assignments.map((assignment) =>
-              editingAssignmentId === assignment.id ? (
+              !readOnly && editingAssignmentId === assignment.id ? (
                 <li key={assignment.id} className="px-4 py-4 sm:px-5">
                   <AssignmentForm
                     name={editAssignmentName}
@@ -522,20 +603,24 @@ export default function CourseDetailContent() {
                     <p className="tabular-nums text-sm font-medium text-zinc-700">
                       {formatAssignmentScore(assignment)}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => startEditAssignment(assignment)}
-                      className="text-xs font-medium text-zinc-600 hover:text-zinc-900"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteAssignment(assignment)}
-                      className="text-xs font-medium text-rose-600 hover:text-rose-700"
-                    >
-                      Delete
-                    </button>
+                    {!readOnly && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => startEditAssignment(assignment)}
+                          className="text-xs font-medium text-zinc-600 hover:text-zinc-900"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAssignment(assignment)}
+                          className="text-xs font-medium text-rose-600 hover:text-rose-700"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
                   </div>
                 </li>
               ),
@@ -544,15 +629,17 @@ export default function CourseDetailContent() {
         </ul>
       </section>
 
-      <section aria-label="Course actions" className="flex justify-end">
-        <button
-          type="button"
-          onClick={handleDeleteCourse}
-          className="text-sm font-medium text-rose-600 hover:text-rose-700"
-        >
-          Delete course
-        </button>
-      </section>
+      {!readOnly && (
+        <section aria-label="Course actions" className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleDeleteCourse}
+            className="text-sm font-medium text-rose-600 hover:text-rose-700"
+          >
+            Delete course
+          </button>
+        </section>
+      )}
 
       <section
         aria-label="What-if mode"
