@@ -8,10 +8,19 @@ import {
   calculateCgpa,
   computeTermMetrics,
   formatCoursePercent,
+  formatGpaDisplay,
   isValidCourseCredits,
   isValidTermTargetGpa,
 } from "@/lib/courses";
+import { getPriorAcademicHistory } from "@/lib/academic-hub";
 import { getGpaTargetOptions, parseGpaTargetOptionId } from "@/lib/grading";
+import {
+  computeCgpaPrediction,
+  computeTermPrediction,
+  formatProbability,
+  formatTrackStatus,
+  getTrackStatusColorClass,
+} from "@/lib/predictionEngine";
 import { homeMock } from "./mock-data";
 
 const NO_TARGET_OPTION = "none";
@@ -26,7 +35,6 @@ export default function HomePageContent() {
     setTermTargetGpa,
     activeTerm,
     terms,
-    cgpaBaseline,
     addTerm,
   } = useCourses();
   const gpaTargetOptions = useMemo(
@@ -45,13 +53,30 @@ export default function HomePageContent() {
   const [editingTermTarget, setEditingTermTarget] = useState(false);
   const [termTargetInput, setTermTargetInput] = useState("");
 
-  const cgpa = useMemo(() => calculateCgpa(terms, cgpaBaseline), [terms, cgpaBaseline]);
+  const cgpa = useMemo(() => calculateCgpa(terms), [terms]);
 
   const termMetrics = useMemo(
     () => computeTermMetrics(courses, termTargetGpa, cgpa),
     [courses, termTargetGpa, cgpa],
   );
 
+  const termPrediction = useMemo(
+    () => computeTermPrediction(courses, termTargetGpa, gradeScale),
+    [courses, termTargetGpa, gradeScale],
+  );
+
+  const cgpaPrediction = useMemo(
+    () =>
+      computeCgpaPrediction(
+        terms,
+        gradeScale,
+        termTargetGpa,
+        activeTerm?.id,
+      ),
+    [terms, gradeScale, termTargetGpa, activeTerm?.id],
+  );
+
+  const priorHistory = useMemo(() => getPriorAcademicHistory(terms), [terms]);
   const canEditTermTarget = courses.length > 0;
   const showStatus = termMetrics.showTermComparison && termMetrics.status;
 
@@ -124,8 +149,8 @@ export default function HomePageContent() {
         >
           <p className="text-base font-medium text-zinc-900">No terms yet</p>
           <p className="mt-2 text-sm text-zinc-500">
-            Add your first term to organize courses by semester, or import your academic
-            history from onboarding.
+            Add your first term to organize courses by semester, or add prior
+            academic history from Academic Overview.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <button
@@ -146,13 +171,13 @@ export default function HomePageContent() {
               Manage terms
             </Link>
           </div>
-          {cgpaBaseline && (
+          {priorHistory && (
             <p className="mt-6 text-sm text-zinc-600">
-              Imported CGPA baseline:{" "}
+              Cumulative GPA:{" "}
               <span className="font-semibold tabular-nums text-zinc-900">
                 {termMetrics.cumulativeDisplay}
               </span>{" "}
-              across {cgpaBaseline.completedCredits} completed credits
+              (includes prior history across {priorHistory.completedCredits} credits)
             </p>
           )}
         </section>
@@ -167,7 +192,7 @@ export default function HomePageContent() {
             <p className="text-sm text-zinc-500">
               Term GPA appears once you add a term and courses.
             </p>
-            {cgpaBaseline && (
+            {priorHistory && (
               <p className="mt-3 text-2xl font-bold tabular-nums text-zinc-900">
                 Cumulative: {termMetrics.cumulativeDisplay}
               </p>
@@ -188,6 +213,21 @@ export default function HomePageContent() {
                     {termMetrics.termPercentDisplay} course average
                   </p>
                 )}
+                {termPrediction.projectedTermGpa.expected !== null && (
+                  <p className="mt-2 text-sm text-zinc-600">
+                    Projected:{" "}
+                    <span className="font-medium tabular-nums text-zinc-900">
+                      {formatGpaDisplay(termPrediction.projectedTermGpa.expected)}
+                    </span>
+                    {termPrediction.trackStatus && (
+                      <span
+                        className={`ml-2 font-medium ${getTrackStatusColorClass(termPrediction.trackStatus)}`}
+                      >
+                        {formatTrackStatus(termPrediction.trackStatus)}
+                      </span>
+                    )}
+                  </p>
+                )}
               </div>
 
               <div className="lg:text-right">
@@ -197,6 +237,14 @@ export default function HomePageContent() {
                 <p className="mt-2 text-3xl font-semibold tabular-nums tracking-tight text-zinc-800 sm:text-4xl">
                   {termMetrics.cumulativeDisplay}
                 </p>
+                {cgpaPrediction.projectedCgpa.expected !== null && (
+                  <p className="mt-2 text-sm text-zinc-600">
+                    Projected:{" "}
+                    <span className="font-medium tabular-nums text-zinc-900">
+                      {formatGpaDisplay(cgpaPrediction.projectedCgpa.expected)}
+                    </span>
+                  </p>
+                )}
                 <Link
                   href="/history"
                   className="mt-2 inline-block text-sm font-medium text-zinc-500 hover:text-zinc-900"

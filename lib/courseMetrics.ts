@@ -1,4 +1,3 @@
-import type { CgpaBaseline } from "@/lib/cgpa-baseline";
 import {
   formatGpaTargetLabel,
   getDefaultScale,
@@ -435,30 +434,14 @@ function sumEligibleCourseGpaPoints(courses: CourseForAcademicStats[]): {
 /**
  * CGPA across all terms: sum(courseGpa × credits) / sum(credits) over every
  * eligible course globally. Never averages term GPAs.
- * Optional baseline adds prior completed credit at a fixed CGPA without fake courses.
  */
-export function calculateCgpa(
-  terms: TermForAcademicStats[],
-  baseline: CgpaBaseline | null = null,
-): number | null {
+export function calculateCgpa(terms: TermForAcademicStats[]): number | null {
   const { points: coursePoints, credits: courseCredits } = sumEligibleCourseGpaPoints(
     getAllCoursesFromTerms(terms),
   );
 
-  if (!baseline) {
-    if (courseCredits <= 0) return null;
-    return coursePoints / courseCredits;
-  }
-
-  const baselinePoints = baseline.cgpa * baseline.completedCredits;
-  const totalCredits = baseline.completedCredits + courseCredits;
-  if (totalCredits <= 0) return null;
-
-  if (courseCredits <= 0) {
-    return baseline.cgpa;
-  }
-
-  return (baselinePoints + coursePoints) / totalCredits;
+  if (courseCredits <= 0) return null;
+  return coursePoints / courseCredits;
 }
 
 export function calculateWeightedPercentage(
@@ -527,9 +510,8 @@ export function calculateVsLastTerm(terms: TermForAcademicStats[]): number | nul
 
 export function computeAcademicHistorySummary(
   terms: TermForAcademicStats[],
-  baseline: CgpaBaseline | null = null,
 ): AcademicHistorySummary {
-  const cgpa = calculateCgpa(terms, baseline);
+  const cgpa = calculateCgpa(terms);
   const cumulativePercent = calculateCumulativePercentage(terms);
   const vsLastTerm = calculateVsLastTerm(terms);
 

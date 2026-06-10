@@ -1,7 +1,6 @@
 import {
   calculateCourseAverage,
-  getAssignmentPercent,
-  isAssignmentGraded,
+  sumAssignmentWeightTotals,
   type Assignment,
 } from "@/lib/assignments";
 import { enrichCourse, type Course } from "@/lib/courses";
@@ -123,7 +122,8 @@ function isAlreadyAtTarget(course: Course, scale: GradeScale): boolean {
 
 /**
  * Minimum average score (0–100) needed on all remaining ungraded work to hit the
- * course target. Uses the same unweighted mean model as calculateCourseAverage.
+ * course target. Uses the same weighted model as calculateCourseAverage:
+ * final = (Σ graded percent×weight + R × ungradedWeight) / (gradedWeight + ungradedWeight).
  */
 export function calculateRequiredFinalScore(
   course: Course,
@@ -138,20 +138,16 @@ export function calculateRequiredFinalScore(
     return "already achieved";
   }
 
-  const gradedPercents = course.assignments
-    .map(getAssignmentPercent)
-    .filter((percent): percent is number => percent !== null);
-  const ungradedCount = course.assignments.filter(
-    (assignment) => !isAssignmentGraded(assignment),
-  ).length;
+  const { weightedPercentSum, gradedWeightTotal, ungradedWeightTotal } =
+    sumAssignmentWeightTotals(course.assignments);
 
-  if (ungradedCount === 0) {
+  if (ungradedWeightTotal === 0) {
     return "impossible";
   }
 
-  const gradedSum = gradedPercents.reduce((sum, percent) => sum + percent, 0);
-  const totalCount = gradedPercents.length + ungradedCount;
-  const required = (targetPercent * totalCount - gradedSum) / ungradedCount;
+  const totalWeight = gradedWeightTotal + ungradedWeightTotal;
+  const required =
+    (targetPercent * totalWeight - weightedPercentSum) / ungradedWeightTotal;
 
   if (required > 100) {
     return "impossible";

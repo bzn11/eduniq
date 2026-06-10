@@ -6,7 +6,14 @@ import { useProfile } from "@/context/ProfileContext";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
-const PUBLIC_PATHS = new Set(["/", "/login", "/signup", "/verify-email"]);
+const PUBLIC_PATHS = new Set([
+  "/",
+  "/login",
+  "/signup",
+  "/verify-email",
+  "/forgot-password",
+  "/reset-password",
+]);
 const FLOW_PATHS = new Set(["/onboarding"]);
 
 const HYDRATION_FALLBACK = (

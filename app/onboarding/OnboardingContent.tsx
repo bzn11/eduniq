@@ -4,7 +4,7 @@ import { AuthCard } from "@/components/auth/AuthCard";
 import { useAuth } from "@/context/AuthContext";
 import { useCourses } from "@/context/CourseContext";
 import { useProfile } from "@/context/ProfileContext";
-import { isValidCgpaBaseline } from "@/lib/cgpa-baseline";
+import { isValidPriorAcademicHistory } from "@/lib/academic-hub";
 import { isValidCourseCredits } from "@/lib/courses";
 import {
   getGradeScalePresetOptions,
@@ -145,7 +145,7 @@ export default function OnboardingContent() {
 
   async function finishOnboardingFlow(
     terms: OnboardingImportTerm[],
-    baseline: { cgpa: number; completedCredits: number } | null,
+    priorHistory: { cgpa: number; completedCredits: number } | null,
   ) {
     setError(null);
     setIsSaving(true);
@@ -166,7 +166,7 @@ export default function OnboardingContent() {
       terms.length > 0
         ? buildImportedTerms(terms, gradeScale)
         : [];
-    const replaceOk = await replaceAcademicState(imported, baseline);
+    const replaceOk = await replaceAcademicState(imported, priorHistory);
     if (!replaceOk) {
       setIsSaving(false);
       setError("Could not save your academic data. Try again.");
@@ -231,14 +231,14 @@ export default function OnboardingContent() {
     event.preventDefault();
     const cgpa = Number(importCgpa);
     const completedCredits = Number(importCredits);
-    const baseline = { cgpa, completedCredits };
+    const priorHistory = { cgpa, completedCredits };
 
-    if (!isValidCgpaBaseline(baseline)) {
+    if (!isValidPriorAcademicHistory(priorHistory)) {
       setError("Enter a valid CGPA (0–4.33) and completed credits greater than 0.");
       return;
     }
 
-    await finishOnboardingFlow([], baseline);
+    await finishOnboardingFlow([], priorHistory);
   }
 
   async function handleFinishFullImport() {
@@ -399,8 +399,8 @@ export default function OnboardingContent() {
             How would you like to set up your academic record?
           </p>
           <ImportOption
-            title="Import CGPA only"
-            description="Enter your current cumulative GPA and completed credits. No courses or terms are created."
+            title="Add prior academic history"
+            description="Enter your cumulative GPA and completed credits from before Eduniq."
             onClick={() => setStep("cgpa")}
           />
           <ImportOption
@@ -423,8 +423,8 @@ export default function OnboardingContent() {
       {step === "cgpa" && (
         <form onSubmit={handleFinishCgpaImport} className="space-y-5">
           <p className="text-sm text-zinc-600">
-            This baseline counts toward cumulative GPA without creating placeholder
-            courses.
+            This creates an imported academic history term that counts toward your
+            cumulative GPA.
           </p>
           <TextField
             id="importCgpa"

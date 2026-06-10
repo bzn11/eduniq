@@ -12,6 +12,12 @@ import { useState } from "react";
 const inputClassName =
   "mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400";
 
+const AUTH_ERROR_MESSAGES: Record<string, string> = {
+  auth: "Sign-in failed. Please try again.",
+  config: "Authentication is not configured. Contact support if this persists.",
+  expired: "Your sign-in link has expired. Please sign in again or request a new link.",
+};
+
 export default function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -21,6 +27,7 @@ export default function LoginContent() {
   const [isLoading, setIsLoading] = useState(false);
 
   const authError = searchParams.get("error");
+  const passwordReset = searchParams.get("reset") === "success";
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -68,9 +75,15 @@ export default function LoginContent() {
         </>
       }
     >
+      {passwordReset && (
+        <p className="mb-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          Your password was updated. Sign in with your new password.
+        </p>
+      )}
+
       {authError && (
         <p className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
-          Sign-in failed. Please try again.
+          {AUTH_ERROR_MESSAGES[authError] ?? AUTH_ERROR_MESSAGES.auth}
         </p>
       )}
 
@@ -98,9 +111,17 @@ export default function LoginContent() {
           />
         </div>
         <div>
-          <label htmlFor="password" className="text-xs font-medium text-zinc-500">
-            Password
-          </label>
+          <div className="flex items-center justify-between">
+            <label htmlFor="password" className="text-xs font-medium text-zinc-500">
+              Password
+            </label>
+            <Link
+              href="/forgot-password"
+              className="text-xs font-medium text-zinc-600 hover:text-zinc-900 hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
           <input
             id="password"
             type="password"

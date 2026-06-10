@@ -19,13 +19,45 @@ export function getAssignmentPercent(assignment: Assignment): number | null {
   return ((assignment.earnedPoints ?? 0) / (assignment.totalPoints ?? 1)) * 100;
 }
 
+function isValidAssignmentWeight(weight: number): boolean {
+  return typeof weight === "number" && !Number.isNaN(weight) && weight > 0;
+}
+
+export type AssignmentWeightTotals = {
+  weightedPercentSum: number;
+  gradedWeightTotal: number;
+  ungradedWeightTotal: number;
+};
+
+/** Sums graded (percent × weight) and weight totals; ignores invalid weights. */
+export function sumAssignmentWeightTotals(
+  assignments: Assignment[],
+): AssignmentWeightTotals {
+  let weightedPercentSum = 0;
+  let gradedWeightTotal = 0;
+  let ungradedWeightTotal = 0;
+
+  for (const assignment of assignments) {
+    const weight = assignment.weight;
+    if (!isValidAssignmentWeight(weight)) continue;
+
+    const percent = getAssignmentPercent(assignment);
+    if (percent !== null) {
+      weightedPercentSum += percent * weight;
+      gradedWeightTotal += weight;
+    } else {
+      ungradedWeightTotal += weight;
+    }
+  }
+
+  return { weightedPercentSum, gradedWeightTotal, ungradedWeightTotal };
+}
+
 export function calculateCourseAverage(assignments: Assignment[]): number {
-  const graded = assignments
-    .map(getAssignmentPercent)
-    .filter((percent): percent is number => percent !== null);
+  const { weightedPercentSum, gradedWeightTotal } =
+    sumAssignmentWeightTotals(assignments);
 
-  if (graded.length === 0) return 0;
+  if (gradedWeightTotal === 0) return 0;
 
-  const total = graded.reduce((sum, percent) => sum + percent, 0);
-  return total / graded.length;
+  return weightedPercentSum / gradedWeightTotal;
 }

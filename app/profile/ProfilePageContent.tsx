@@ -1,7 +1,11 @@
 "use client";
 
+import { PriorAcademicHistoryForm } from "@/components/academic/PriorAcademicHistoryForm";
 import { useAuth } from "@/context/AuthContext";
+import { useCourses } from "@/context/CourseContext";
 import { useProfile } from "@/context/ProfileContext";
+import { getPriorAcademicHistory } from "@/lib/academic-hub";
+import { formatGpaDisplay } from "@/lib/courses";
 import {
   getGradeScalePresetOptions,
   type GradeScalePresetId,
@@ -13,7 +17,12 @@ const scaleOptions = getGradeScalePresetOptions();
 export default function ProfilePageContent() {
   const { user } = useAuth();
   const { profile, gradeScale, updateGradeScale, isLoading } = useProfile();
+  const { terms, upsertPriorAcademicHistory, removePriorAcademicHistory } =
+    useCourses();
+  const priorHistory = useMemo(() => getPriorAcademicHistory(terms), [terms]);
   const [isEditingScale, setIsEditingScale] = useState(false);
+  const [isEditingHistory, setIsEditingHistory] = useState(false);
+  const [isSavingHistory, setIsSavingHistory] = useState(false);
   const [selectedScaleId, setSelectedScaleId] = useState<GradeScalePresetId>(
     gradeScale.id as GradeScalePresetId,
   );
@@ -47,6 +56,27 @@ export default function ProfilePageContent() {
     setSelectedScaleId(gradeScale.id as GradeScalePresetId);
     setError(null);
     setIsEditingScale(true);
+  }
+
+  async function handleSavePriorHistory(input: {
+    cgpa: number;
+    completedCredits: number;
+  }) {
+    setIsSavingHistory(true);
+    upsertPriorAcademicHistory(input);
+    setIsSavingHistory(false);
+    setIsEditingHistory(false);
+  }
+
+  async function handleClearPriorHistory() {
+    const confirmed = window.confirm(
+      "Remove your prior academic history? Cumulative GPA will only reflect courses tracked in Eduniq.",
+    );
+    if (!confirmed) return;
+    setIsSavingHistory(true);
+    removePriorAcademicHistory();
+    setIsSavingHistory(false);
+    setIsEditingHistory(false);
   }
 
   if (isLoading) {
@@ -156,6 +186,59 @@ export default function ProfilePageContent() {
                 {isSaving ? "Saving…" : "Save"}
               </button>
             </div>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-medium text-zinc-900">
+              Prior academic history
+            </h2>
+            {priorHistory ? (
+              <p className="mt-1 text-sm text-zinc-600">
+                {formatGpaDisplay(priorHistory.cgpa)} across{" "}
+                {priorHistory.completedCredits} completed credits
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-zinc-500">
+                No prior history added. Import cumulative GPA from before Eduniq.
+              </p>
+            )}
+          </div>
+          {!isEditingHistory && (
+            <button
+              type="button"
+              onClick={() => setIsEditingHistory(true)}
+              className="shrink-0 rounded-lg border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+            >
+              {priorHistory ? "Edit" : "Add"}
+            </button>
+          )}
+        </div>
+
+        {isEditingHistory && (
+          <div className="mt-4">
+            <PriorAcademicHistoryForm
+              initialCgpa={priorHistory ? String(priorHistory.cgpa) : ""}
+              initialCredits={
+                priorHistory ? String(priorHistory.completedCredits) : ""
+              }
+              onSave={handleSavePriorHistory}
+              onClear={handleClearPriorHistory}
+              showClear={priorHistory !== null}
+              isSaving={isSavingHistory}
+              submitLabel={priorHistory ? "Update history" : "Add prior history"}
+            />
+            <button
+              type="button"
+              onClick={() => setIsEditingHistory(false)}
+              disabled={isSavingHistory}
+              className="mt-3 text-sm font-medium text-zinc-500 hover:text-zinc-900 disabled:opacity-60"
+            >
+              Cancel
+            </button>
           </div>
         )}
       </section>

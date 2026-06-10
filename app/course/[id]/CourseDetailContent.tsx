@@ -9,6 +9,7 @@ import {
   formatAssignmentScore,
   formatCoursePercent,
   formatCourseTargetLabel,
+  formatGpaDisplay,
   getStatusColorClass,
   hasCourseTarget,
   isValidCourseCredits,
@@ -21,6 +22,13 @@ import {
   parseGpaTargetOptionId,
   type GpaTargetOption,
 } from "@/lib/grading";
+import {
+  computeCoursePrediction,
+  formatProbability,
+  formatTrackStatus,
+  getTrackStatusColorClass,
+  simulateAcademicWhatIf,
+} from "@/lib/predictionEngine";
 import {
   applySimulatedAssignmentChange,
   calculateRequiredFinalScore,
@@ -196,6 +204,8 @@ export default function CourseDetailContent() {
     deleteAssignment,
     updateCourse,
     deleteCourse,
+    terms,
+    activeTerm,
   } = useCourses();
   const course = getCourseById(id);
 
@@ -245,6 +255,23 @@ export default function CourseDetailContent() {
     if (!simulatedCourse) return null;
     return calculateRequiredFinalScore(simulatedCourse, gradeScale);
   }, [simulatedCourse, gradeScale]);
+
+  const coursePrediction = useMemo(() => {
+    if (!course) return null;
+    const source = simulatedCourse ?? course;
+    return computeCoursePrediction(source, gradeScale);
+  }, [course, simulatedCourse, gradeScale]);
+
+  const academicWhatIf = useMemo(() => {
+    if (!simulatedCourse || !activeTerm) return null;
+    const simulated = new Map([[simulatedCourse.id, simulatedCourse]]);
+    return simulateAcademicWhatIf(
+      terms,
+      activeTerm.id,
+      simulated,
+      gradeScale,
+    );
+  }, [simulatedCourse, terms, activeTerm, gradeScale]);
 
   if (!course) {
     return <p className="text-sm text-zinc-600">Course not found</p>;
@@ -695,6 +722,62 @@ export default function CourseDetailContent() {
         </section>
       )}
 
+      {coursePrediction && (
+        <section
+          aria-label="Course predictions"
+          className="rounded-xl border border-zinc-200 bg-white px-4 py-5 shadow-sm sm:px-6"
+        >
+          <h2 className="text-lg font-semibold tracking-tight text-zinc-900">
+            Predictions
+          </h2>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-xs text-zinc-500">Predicted final grade</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                {formatCoursePercent(coursePrediction.predictedFinalCourseGrade)}
+              </p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                Best{" "}
+                {coursePrediction.scenarios.best !== null
+                  ? formatCoursePercent(coursePrediction.scenarios.best)
+                  : "—"}{" "}
+                · Worst{" "}
+                {coursePrediction.scenarios.worst !== null
+                  ? formatCoursePercent(coursePrediction.scenarios.worst)
+                  : "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500">Required on remaining</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                {coursePrediction.requiredAverageOnRemainingWork !== null
+                  ? `${coursePrediction.requiredAverageOnRemainingWork.toFixed(1)}%`
+                  : "—"}
+              </p>
+              {coursePrediction.requiredImprovementPerAssignment !== null && (
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  +{coursePrediction.requiredImprovementPerAssignment}% vs current pace
+                </p>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500">Target probability</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-zinc-900">
+                {formatProbability(coursePrediction.probabilityOfAchievingTarget)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-zinc-500">Track status</p>
+              <p
+                className={`mt-1 text-lg font-semibold ${getTrackStatusColorClass(coursePrediction.trackStatus)}`}
+              >
+                {formatTrackStatus(coursePrediction.trackStatus)}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section
         aria-label="What-if mode"
         className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50/50 px-4 py-5 sm:px-6"
@@ -750,6 +833,22 @@ export default function CourseDetailContent() {
                 </p>
               </div>
             </div>
+            {academicWhatIf && (
+              <div className="grid gap-4 rounded-lg border border-zinc-200 bg-white px-4 py-3 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs text-zinc-500">Simulated term GPA</p>
+                  <p className="mt-1 text-base font-semibold tabular-nums text-zinc-900">
+                    {formatGpaDisplay(academicWhatIf.termGpa)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Simulated CGPA</p>
+                  <p className="mt-1 text-base font-semibold tabular-nums text-zinc-900">
+                    {formatGpaDisplay(academicWhatIf.cgpa)}
+                  </p>
+                </div>
+              </div>
+            )}
             <ul className="divide-y divide-zinc-200 overflow-hidden rounded-xl border border-zinc-200 bg-white">
               {simulatedCourse.assignments.map((assignment) => {
                 const realAssignment = activeCourse.assignments.find(

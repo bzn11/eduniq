@@ -12,6 +12,8 @@ export type Term = {
   isActive: boolean;
   courses: Course[];
   termTargetGpa: number | null;
+  /** Prior imported CGPA packaged as a normal term for unified calculations. */
+  isSynthetic?: boolean;
 };
 
 export const DEFAULT_TERM_NAME = "Fall 2025";
@@ -42,22 +44,27 @@ export function createInitialTerms(): Term[] {
 }
 
 export function getActiveTerm(terms: Term[]): Term | undefined {
-  return terms.find((term) => term.isActive);
+  return terms.find((term) => term.isActive && !term.isSynthetic);
 }
 
 export function ensureSingleActiveTerm(terms: Term[]): Term[] {
   if (terms.length === 0) return [];
 
-  const activeIndices = terms
-    .map((term, index) => (term.isActive ? index : -1))
+  const eligibleIndices = terms
+    .map((term, index) => (!term.isSynthetic && term.isActive ? index : -1))
     .filter((index) => index >= 0);
 
+  const fallbackIndex = terms.findIndex((term) => !term.isSynthetic);
   const activeIndex =
-    activeIndices.length > 0 ? activeIndices[0] : terms.length - 1;
+    eligibleIndices.length > 0
+      ? eligibleIndices[0]
+      : fallbackIndex >= 0
+        ? fallbackIndex
+        : -1;
 
   return terms.map((term, index) => ({
     ...term,
-    isActive: index === activeIndex,
+    isActive: term.isSynthetic ? false : index === activeIndex,
   }));
 }
 
@@ -94,6 +101,7 @@ export function normalizeTerms(terms: Term[]): Term[] {
   const enriched = terms.map((term) => ({
     ...term,
     name: term.name.trim() || "Untitled term",
+    isSynthetic: term.isSynthetic === true,
     termTargetGpa:
       term.termTargetGpa !== null && isValidTermTargetGpa(term.termTargetGpa)
         ? term.termTargetGpa

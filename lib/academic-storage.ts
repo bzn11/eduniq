@@ -104,6 +104,7 @@ function parseStoredTerm(raw: unknown, scale: GradeScale): Term | null {
     id: record.id,
     name: record.name.trim(),
     isActive: record.isActive === true,
+    isSynthetic: record.isSynthetic === true,
     courses,
     termTargetGpa,
   };
@@ -250,6 +251,7 @@ export function sanitizeTermsDataset(
         id: term.id,
         name: term.name.trim(),
         isActive: term.isActive === true,
+        isSynthetic: term.isSynthetic === true,
         courses,
         termTargetGpa,
       });
