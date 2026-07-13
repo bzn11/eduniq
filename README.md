@@ -5,7 +5,7 @@
 [![Supabase](https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?logo=supabase&logoColor=white)](https://supabase.com/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 
-Eduniq is a student GPA tracker for terms, courses, and weighted assignments. It calculates credit-weighted term and cumulative GPA, supports multiple institutional grading scales, and includes deterministic projections and what-if simulation so students can see standing and how remaining work maps to a target—without maintaining a spreadsheet.
+Eduniq is a student GPA tracker for terms, courses and weighted assignments. It calculates credit-weighted term and cumulative GPA, supports multiple institutional grading scales, and includes deterministic projections and what-if simulation so students can see standing and how remaining work maps to a target—without maintaining a spreadsheet.
 
 ---
 
