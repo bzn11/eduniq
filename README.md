@@ -242,20 +242,6 @@ Close simulation (real data unchanged)
 /reset-password → update password
 ```
 
----
-
-## Screenshots
-
-![Landing](docs/images/landing.png)
-
-![Home dashboard](docs/images/dashboard.png)
-
-![Course detail](docs/images/course.png)
-
-![What-if simulation](docs/images/what-if.png)
-
----
-
 ## Security
 
 - **Authentication** — Supabase Auth sessions stored in cookies; middleware calls `getUser()` to refresh and validate.
